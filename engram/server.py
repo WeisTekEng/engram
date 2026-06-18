@@ -101,6 +101,8 @@ class _Handler(BaseHTTPRequestHandler):
                 min_score=data.get("min_score", 0.3),
             )
             self._json({
+                "query": data.get("query", ""),
+                "count": len(result.semantic_hits),
                 "hot_cache": result.hot_cache,
                 "semantic_hits": [
                     {"content": h.memory.content, "score": h.score, "category": h.memory.category}
