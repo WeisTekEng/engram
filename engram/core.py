@@ -274,6 +274,10 @@ class Engram:
             "persist_dir": self.persist_dir,
         }
 
+    def close(self) -> None:
+        """Release all resources (ChromaDB clients, file locks)."""
+        self._semantic.close()
+
     def clear(self) -> None:
         """Clear all memory layers. Irreversible!"""
         self._semantic.clear()

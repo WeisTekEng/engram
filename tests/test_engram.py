@@ -14,7 +14,7 @@ class TestSemanticIndex:
 
     def test_remember_and_count(self):
         from engram.layers.semantic_index import SemanticIndex
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
             index = SemanticIndex(persist_dir=tmpdir)
             assert index.count() == 0
 
@@ -24,7 +24,7 @@ class TestSemanticIndex:
 
     def test_recall_finds_relevant(self):
         from engram.layers.semantic_index import SemanticIndex
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
             index = SemanticIndex(persist_dir=tmpdir)
 
             index.remember("Jeremy prefers dark mode on all dashboards", category="user_preference", importance=0.9)
@@ -39,7 +39,7 @@ class TestSemanticIndex:
 
     def test_recall_irrelevant_scores_low(self):
         from engram.layers.semantic_index import SemanticIndex
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
             index = SemanticIndex(persist_dir=tmpdir)
 
             index.remember("Jeremy likes dark mode", category="user_preference")
@@ -53,7 +53,7 @@ class TestSemanticIndex:
 
     def test_forget(self):
         from engram.layers.semantic_index import SemanticIndex
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
             index = SemanticIndex(persist_dir=tmpdir)
             memory_id = index.remember("Test memory")
             assert index.count() == 1
@@ -62,7 +62,7 @@ class TestSemanticIndex:
 
     def test_persistence(self):
         from engram.layers.semantic_index import SemanticIndex
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
             # Create and add
             index1 = SemanticIndex(persist_dir=tmpdir)
             index1.remember("Persistent memory test")
@@ -74,7 +74,7 @@ class TestSemanticIndex:
 
     def test_batch_remember(self):
         from engram.layers.semantic_index import SemanticIndex
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
             index = SemanticIndex(persist_dir=tmpdir)
             ids = index.batch_remember([
                 {"content": "Memory A", "category": "test"},
@@ -86,7 +86,7 @@ class TestSemanticIndex:
 
     def test_category_filter(self):
         from engram.layers.semantic_index import SemanticIndex
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
             index = SemanticIndex(persist_dir=tmpdir)
             index.remember("Dark mode preference", category="user_preference")
             index.remember("Tailscale IP 100.104.70.8", category="environment")
@@ -127,7 +127,7 @@ class TestEngramCore:
 
     def test_remember_and_recall(self):
         from engram import Engram
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
             engram = Engram(persist_dir=tmpdir, auto_bootstrap=False)
 
             engram.remember("Jeremy prefers dark mode", category="user_preference", importance=0.9)
@@ -138,7 +138,7 @@ class TestEngramCore:
 
     def test_hot_cache(self):
         from engram import Engram
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
             engram = Engram(persist_dir=tmpdir, auto_bootstrap=False)
 
             engram.remember("Current task: refactoring dashboard", layer=1)
@@ -150,7 +150,7 @@ class TestEngramCore:
     def test_format_for_prompt(self):
         from engram import Engram
         from engram.utils.token_budget import TokenBudget
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
             engram = Engram(persist_dir=tmpdir, auto_bootstrap=False)
 
             engram.remember("Jeremy prefers dark mode", category="user_preference")
@@ -165,7 +165,7 @@ class TestEngramCore:
 
     def test_stats(self):
         from engram import Engram
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
             engram = Engram(persist_dir=tmpdir, auto_bootstrap=False)
             engram.remember("test memory")
             stats = engram.stats()

@@ -1,0 +1,11 @@
+Metadata-Version: 2.4
+Name: engram
+Version: 0.1.0
+Summary: Multi-layered memory architecture for Hermes AI agents
+Requires-Python: >=3.10
+Requires-Dist: chromadb>=0.4.0
+Requires-Dist: sentence-transformers>=2.2.0
+Requires-Dist: numpy>=1.24.0
+Provides-Extra: dev
+Requires-Dist: pytest>=7.0; extra == "dev"
+Requires-Dist: pytest-asyncio>=0.21; extra == "dev"

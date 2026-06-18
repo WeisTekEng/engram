@@ -86,6 +86,13 @@ class SemanticIndex:
             metadata={"hnsw:space": "cosine"},
         )
 
+    def __del__(self):
+        """Attempt to close ChromaDB on deletion."""
+        try:
+            self.close()
+        except Exception:
+            pass
+
     def remember(
         self,
         content: str,
@@ -207,6 +214,14 @@ class SemanticIndex:
                 if meta and "category" in meta:
                     categories.add(meta["category"])
         return sorted(categories)
+
+    def close(self) -> None:
+        """Close the ChromaDB client, releasing file locks."""
+        try:
+            del self.collection
+            del self.client
+        except Exception:
+            pass
 
     def clear(self) -> None:
         """Delete all memories. Irreversible!"""
