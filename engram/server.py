@@ -44,7 +44,11 @@ class _Handler(BaseHTTPRequestHandler):
         with cls._metrics_lock:
             qs = list(cls._metrics_queries)
         if not qs:
-            return {"total_queries": 0, "hit_rate": 0, "avg_score": 0, "queries": []}
+            return {
+                "total_queries": 0, "hit_rate": 0, "hits": 0, "misses": 0,
+                "avg_score": 0, "min_score": 0, "max_score": 0, "median_score": 0,
+                "category_distribution": {}, "recent_queries": [],
+            }
 
         total = len(qs)
         hits = sum(1 for q in qs if q["count"] > 0)

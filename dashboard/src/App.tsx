@@ -112,9 +112,9 @@ function OverviewPanel() {
               </div>
             </div>
             <div className="metrics-row">
-              <span>Hits: <strong>{metrics.hits}</strong></span>
-              <span>Misses: <strong>{metrics.misses}</strong></span>
-              <span>Range: <strong>{metrics.min_score.toFixed(3)} – {metrics.max_score.toFixed(3)}</strong></span>
+              <span>Hits: <strong>{metrics.hits ?? 0}</strong></span>
+              <span>Misses: <strong>{metrics.misses ?? 0}</strong></span>
+              <span>Range: <strong>{(metrics.min_score ?? 0).toFixed(3)} – {(metrics.max_score ?? 0).toFixed(3)}</strong></span>
             </div>
           </>
         )}
