@@ -5,6 +5,8 @@ Exposes REST API for memory operations and serves the dashboard.
 
 import json
 import threading
+import time
+from collections import defaultdict
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse
 from typing import Optional
@@ -18,6 +20,59 @@ class _Handler(BaseHTTPRequestHandler):
     # Set by EngramServer before starting
     engram: Engram = None
     dashboard_html: str = ""
+
+    # Metrics tracking: query log + aggregate stats
+    _metrics_lock = threading.Lock()
+    _metrics_queries: list = []  # list of {ts, query, count, top_score, categories}
+    _metrics_max_queries = 500   # rolling window
+
+    @classmethod
+    def _log_query(cls, query: str, count: int, top_score: float, categories: list):
+        with cls._metrics_lock:
+            cls._metrics_queries.append({
+                "ts": time.time(),
+                "query": query[:200],
+                "count": count,
+                "top_score": round(top_score, 3) if top_score else 0,
+                "categories": categories[:5],
+            })
+            if len(cls._metrics_queries) > cls._metrics_max_queries:
+                cls._metrics_queries = cls._metrics_queries[-cls._metrics_max_queries:]
+
+    @classmethod
+    def _get_metrics(cls) -> dict:
+        with cls._metrics_lock:
+            qs = list(cls._metrics_queries)
+        if not qs:
+            return {"total_queries": 0, "hit_rate": 0, "avg_score": 0, "queries": []}
+
+        total = len(qs)
+        hits = sum(1 for q in qs if q["count"] > 0)
+        avg_score = sum(q["top_score"] for q in qs) / total if total else 0
+        scores = [q["top_score"] for q in qs]
+        scores.sort()
+
+        # Category distribution
+        cat_counts = defaultdict(int)
+        for q in qs:
+            for c in q["categories"]:
+                cat_counts[c] += 1
+
+        # Recent queries (last 20)
+        recent = qs[-20:]
+
+        return {
+            "total_queries": total,
+            "hit_rate": round(hits / total, 3) if total else 0,
+            "hits": hits,
+            "misses": total - hits,
+            "avg_score": round(avg_score, 3),
+            "min_score": round(scores[0], 3),
+            "max_score": round(scores[-1], 3),
+            "median_score": round(scores[len(scores)//2], 3),
+            "category_distribution": dict(cat_counts),
+            "recent_queries": list(reversed(recent)),
+        }
 
     def log_message(self, format, *args):
         """Suppress default logging to stderr."""
@@ -85,6 +140,9 @@ class _Handler(BaseHTTPRequestHandler):
                 ]
             })
 
+        elif path == "/metrics":
+            self._json(self._get_metrics())
+
         elif path == "/dashboard" or path == "/":
             body = self.dashboard_html.encode()
             self.send_response(200)
@@ -130,15 +188,23 @@ class _Handler(BaseHTTPRequestHandler):
                 query=data.get("query", ""),
                 layers=data.get("layers"),
                 limit=data.get("limit", 10),
-                min_score=data.get("min_score", 0.3),
+                min_score=data.get("min_score", 0.5),
+            )
+            hits = result.semantic_hits
+            # Auto-log metrics
+            self._log_query(
+                query=data.get("query", ""),
+                count=len(hits),
+                top_score=hits[0].score if hits else 0,
+                categories=[h.memory.category for h in hits],
             )
             self._json({
                 "query": data.get("query", ""),
-                "count": len(result.semantic_hits),
+                "count": len(hits),
                 "hot_cache": result.hot_cache,
                 "semantic_hits": [
                     {"content": h.memory.content, "score": h.score, "category": h.memory.category}
-                    for h in result.semantic_hits
+                    for h in hits
                 ],
             })
 
@@ -410,6 +476,16 @@ class _Handler(BaseHTTPRequestHandler):
                         "score": round(r.score, 3),
                     })
             self._json({"reflections": items, "count": len(items)})
+
+        elif path == "/metrics/log":
+            data = self._read_json()
+            self._log_query(
+                query=data.get("query", ""),
+                count=data.get("count", 0),
+                top_score=data.get("top_score", 0),
+                categories=data.get("categories", []),
+            )
+            self._json({"status": "logged"})
 
         else:
             self._json({"error": "not found"}, status=404)

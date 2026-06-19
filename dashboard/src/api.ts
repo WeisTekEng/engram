@@ -95,6 +95,26 @@ export async function recallLayer1(): Promise<string[]> {
   return data.hot_cache || [];
 }
 
+// ── Metrics ──
+
+interface MetricsData {
+  total_queries: number;
+  hit_rate: number;
+  hits: number;
+  misses: number;
+  avg_score: number;
+  min_score: number;
+  max_score: number;
+  median_score: number;
+  category_distribution: Record<string, number>;
+  recent_queries: { ts: number; query: string; count: number; top_score: number; categories: string[] }[];
+}
+
+export async function fetchMetrics(): Promise<MetricsData> {
+  const res = await fetch(`${BASE}/metrics`);
+  return res.json();
+}
+
 // ── Layer 3: Procedural ──
 
 export async function fetchProcedures(): Promise<{ procedures: { name: string; content: string; steps?: string; domain?: string; score?: number }[]; count: number }> {
