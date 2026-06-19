@@ -8,7 +8,7 @@ import {
 } from './api';
 import './App.css';
 
-type Tab = 'overview' | 'layer1' | 'layer2' | 'layer3' | 'layer4' | 'layer5' | 'skills' | 'search' | 'metrics';
+type Tab = 'overview' | 'layer1' | 'layer2' | 'layer3' | 'layer4' | 'layer5' | 'skills' | 'search';
 
 export default function App() {
   const [tab, setTab] = useState<Tab>('overview');
@@ -39,7 +39,6 @@ export default function App() {
           ['layer5', 'L5 Reflect'],
           ['skills', 'Skills'],
           ['search', '🔍'],
-          ['metrics', '📊'],
         ] as [Tab, string][]).map(([t, label]) => (
           <button key={t} className={`tab ${tab === t ? 'active' : ''}`} onClick={() => setTab(t)}>
             {label}
@@ -56,7 +55,6 @@ export default function App() {
         {tab === 'layer5' && <Layer5Panel />}
         {tab === 'skills' && <SkillsPanel />}
         {tab === 'search' && <SearchPanel />}
-        {tab === 'metrics' && <MetricsPanel />}
       </main>
     </div>
   );
@@ -67,16 +65,17 @@ export default function App() {
 function OverviewPanel() {
   const [health, setHealth] = useState<any>(null);
   const [stats, setStats] = useState<any>(null);
+  const [metrics, setMetrics] = useState<any>(null);
   const [error, setError] = useState('');
 
   const refresh = useCallback(async () => {
     try {
-      const [h, s] = await Promise.all([fetchHealth(), fetchStats()]);
-      setHealth(h); setStats(s); setError('');
+      const [h, s, m] = await Promise.all([fetchHealth(), fetchStats(), fetchMetrics()]);
+      setHealth(h); setStats(s); setMetrics(m); setError('');
     } catch (e: any) { setError(e.message); }
   }, []);
 
-  useEffect(() => { refresh(); const i = setInterval(refresh, 5000); return () => clearInterval(i); }, [refresh]);
+  useEffect(() => { refresh(); const i = setInterval(refresh, 10000); return () => clearInterval(i); }, [refresh]);
 
   if (error) return <div className="card error">⚠️ {error}</div>;
   if (!health || !stats) return <div className="card loading">Loading...</div>;
@@ -84,11 +83,41 @@ function OverviewPanel() {
   return (
     <div className="panel">
       <div className="card">
+        <h2>Overview</h2>
         <div className="stat"><span>Status</span><span className={health.status === 'ok' ? 'green' : 'orange'}>{health.status}</span></div>
         <div className="stat"><span>Total Memories</span><span>{stats.semantic_index.total_memories}</span></div>
         <div className="stat"><span>Hot Cache</span><span>{stats.hot_cache_size}</span></div>
         <div className="stat"><span>Categories</span><span>{stats.semantic_index.categories.join(', ') || 'none'}</span></div>
         <div className="stat"><span>Model</span><span>{stats.semantic_index.embedding_model} ({stats.semantic_index.embedding_dims}d)</span></div>
+
+        {metrics && (
+          <>
+            <h3 style={{ marginTop: 'calc(16px * var(--font-scale))' }}>📊 Query Metrics</h3>
+            <div className="metrics-grid">
+              <div className="metric-box">
+                <div className="metric-value">{metrics.total_queries}</div>
+                <div className="metric-label">Total Queries</div>
+              </div>
+              <div className="metric-box">
+                <div className={`metric-value ${metrics.hit_rate >= 0.7 ? 'green' : metrics.hit_rate >= 0.4 ? 'orange' : 'red'}`}>{(metrics.hit_rate * 100).toFixed(0)}%</div>
+                <div className="metric-label">Hit Rate</div>
+              </div>
+              <div className="metric-box">
+                <div className="metric-value">{metrics.avg_score.toFixed(3)}</div>
+                <div className="metric-label">Avg Score</div>
+              </div>
+              <div className="metric-box">
+                <div className="metric-value">{metrics.median_score.toFixed(3)}</div>
+                <div className="metric-label">Median Score</div>
+              </div>
+            </div>
+            <div className="metrics-row">
+              <span>Hits: <strong>{metrics.hits}</strong></span>
+              <span>Misses: <strong>{metrics.misses}</strong></span>
+              <span>Range: <strong>{metrics.min_score.toFixed(3)} – {metrics.max_score.toFixed(3)}</strong></span>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
@@ -361,87 +390,3 @@ function SearchPanel() {
   );
 }
 
-// ── Metrics ──
-
-function MetricsPanel() {
-  const [metrics, setMetrics] = useState<any>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
-
-  const refresh = useCallback(async () => {
-    try {
-      const m = await fetchMetrics();
-      setMetrics(m); setError('');
-    } catch (e: any) { setError(e.message); }
-    setLoading(false);
-  }, []);
-
-  useEffect(() => { refresh(); const i = setInterval(refresh, 10000); return () => clearInterval(i); }, [refresh]);
-
-  if (error) return <div className="card error">⚠️ {error}</div>;
-  if (loading || !metrics) return <div className="card loading">Loading...</div>;
-
-  const rateColor = metrics.hit_rate >= 0.7 ? 'green' : metrics.hit_rate >= 0.4 ? 'orange' : 'red';
-  const catEntries = Object.entries(metrics.category_distribution || {}).sort((a: any, b: any) => b[1] - a[1]);
-
-  return (
-    <div className="panel">
-      <div className="card">
-        <h2>📊 Query Metrics</h2>
-        <p className="muted">Recall quality and performance</p>
-
-        <div className="metrics-grid">
-          <div className="metric-box">
-            <div className="metric-value">{metrics.total_queries}</div>
-            <div className="metric-label">Total Queries</div>
-          </div>
-          <div className="metric-box">
-            <div className={`metric-value ${rateColor}`}>{(metrics.hit_rate * 100).toFixed(0)}%</div>
-            <div className="metric-label">Hit Rate</div>
-          </div>
-          <div className="metric-box">
-            <div className="metric-value">{metrics.avg_score.toFixed(3)}</div>
-            <div className="metric-label">Avg Score</div>
-          </div>
-          <div className="metric-box">
-            <div className="metric-value">{metrics.median_score.toFixed(3)}</div>
-            <div className="metric-label">Median Score</div>
-          </div>
-        </div>
-
-        <div className="metrics-row">
-          <span>Hits: <strong>{metrics.hits}</strong></span>
-          <span>Misses: <strong>{metrics.misses}</strong></span>
-          <span>Range: <strong>{metrics.min_score.toFixed(3)} – {metrics.max_score.toFixed(3)}</strong></span>
-        </div>
-
-        <h3>Category Distribution</h3>
-        <div className="category-bars">
-          {catEntries.map(([cat, count]: [string, any]) => (
-            <div key={cat} className="cat-bar">
-              <div className="cat-name">{cat}</div>
-              <div className="cat-bar-track">
-                <div className="cat-bar-fill" style={{ width: `${(count / metrics.total_queries * 100).toFixed(1)}%` }} />
-              </div>
-              <div className="cat-count">{count}</div>
-            </div>
-          ))}
-        </div>
-
-        <h3>Recent Queries</h3>
-        <div className="query-log">
-          {(metrics.recent_queries || []).map((q: any, i: number) => (
-            <div key={i} className="query-row">
-              <div className="query-text" title={q.query}>{q.query}</div>
-              <div className="query-meta">
-                <span className={q.count > 0 ? 'badge green' : 'badge red'}>{q.count > 0 ? `${q.count} hits` : 'miss'}</span>
-                <span className="badge">{q.top_score.toFixed(3)}</span>
-                <span className="query-cats">{q.categories?.slice(0, 2).join(', ')}</span>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
