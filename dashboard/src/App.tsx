@@ -8,7 +8,7 @@ import {
 } from './api';
 import './App.css';
 
-type Tab = 'overview' | 'layer1' | 'layer2' | 'layer3' | 'layer4' | 'layer5' | 'skills' | 'search';
+type Tab = 'overview' | 'layer1' | 'layer2' | 'layer3' | 'layer4' | 'layer5' | 'skills' | 'search' | 'how';
 
 export default function App() {
   const [tab, setTab] = useState<Tab>('overview');
@@ -39,6 +39,7 @@ export default function App() {
           ['layer5', 'L5 Reflect'],
           ['skills', 'Skills'],
           ['search', '🔍'],
+          ['how', 'How'],
         ] as [Tab, string][]).map(([t, label]) => (
           <button key={t} className={`tab ${tab === t ? 'active' : ''}`} onClick={() => setTab(t)}>
             {label}
@@ -55,6 +56,7 @@ export default function App() {
         {tab === 'layer5' && <Layer5Panel />}
         {tab === 'skills' && <SkillsPanel />}
         {tab === 'search' && <SearchPanel />}
+        {tab === 'how' && <HowPanel />}
       </main>
     </div>
   );
@@ -385,6 +387,123 @@ function SearchPanel() {
             <span className="hit-category">{h.category}</span>
           </div>
         ))}
+      </div>
+    </div>
+  );
+}
+
+// ── How It Works ──
+
+function HowPanel() {
+  return (
+    <div className="panel">
+      <div className="card how-page">
+        <h2>🧠 How Engram Works</h2>
+        <p className="muted">A 5-layer memory architecture that gives AI agents durable, retrievable memory with intelligent token budgeting.</p>
+
+        <div className="how-flow">
+          <div className="flow-step">
+            <div className="flow-num">1</div>
+            <div className="flow-body">
+              <strong>Hot Cache</strong>
+              <p>Always-injected, high-priority context. 200-char cap. Current task, active constraints, immediate preferences. Fixed token overhead — always loaded.</p>
+            </div>
+          </div>
+          <div className="flow-arrow">↓</div>
+          <div className="flow-step">
+            <div className="flow-num">2</div>
+            <div className="flow-body">
+              <strong>Semantic Index</strong>
+              <p>Vector embeddings in ChromaDB (all-MiniLM-L6-v2, 384-dim). Every memory gets an embedding. On recall, cosine similarity finds the most relevant memories. Only injected when relevance exceeds threshold (0.65). Single biggest token saver.</p>
+            </div>
+          </div>
+          <div className="flow-arrow">↓</div>
+          <div className="flow-step">
+            <div className="flow-num">3</div>
+            <div className="flow-body">
+              <strong>Procedural Memory</strong>
+              <p>Reusable workflows and how-to procedures. Extracted from session episodes by the Auto-Constructor. Each procedure has: name, steps, tags, domain. Triggered when task type matches.</p>
+            </div>
+          </div>
+          <div className="flow-arrow">↓</div>
+          <div className="flow-step">
+            <div className="flow-num">4</div>
+            <div className="flow-body">
+              <strong>Episodic Memory</strong>
+              <p>Timestamped session summaries, key events, and decisions. Each episode tracks: what was done, outcome, tags. The Auto-Constructor scans these hourly to build Layer 3 procedures.</p>
+            </div>
+          </div>
+          <div className="flow-arrow">↓</div>
+          <div className="flow-step">
+            <div className="flow-num">5</div>
+            <div className="flow-body">
+              <strong>Reflective Memory</strong>
+              <p>Self-improvement insights. Pattern recognition, corrections, lessons learned. Each reflection has: topic, insight, action. Feeds back into Layer 2 as durable facts.</p>
+            </div>
+          </div>
+        </div>
+
+        <h3>🔄 Auto-Constructor</h3>
+        <div className="how-section">
+          <p>Runs every 60 minutes. Scans Layer 4 episodes and extracts reusable procedures into Layer 3.</p>
+          <div className="how-steps">
+            <div className="how-step"><span>1</span> Fetch all episodes + existing procedures</div>
+            <div className="how-step"><span>2</span> Semantic dedup check (skip if similar procedure exists with score &gt; 0.75)</div>
+            <div className="how-step"><span>3</span> Assess if episode has actionable steps (root cause, fix, commands)</div>
+            <div className="how-step"><span>4</span> Extract procedure → store in Layer 3</div>
+            <div className="how-step"><span>5</span> Track processed episodes (avoids re-processing)</div>
+          </div>
+        </div>
+
+        <h3>📊 Metrics</h3>
+        <div className="how-section">
+          <p>Every recall query auto-logs to the metrics system. Tracked on the Overview tab:</p>
+          <div className="how-metrics-grid">
+            <div><strong>Hit Rate</strong><span>% of queries returning results</span></div>
+            <div><strong>Avg Score</strong><span>Mean relevance score</span></div>
+            <div><strong>Median Score</strong><span>Midpoint relevance</span></div>
+            <div><strong>Score Range</strong><span>Min – Max spread</span></div>
+            <div><strong>Categories</strong><span>Which memory types are being hit</span></div>
+            <div><strong>Query Log</strong><span>Recent queries with hit counts</span></div>
+          </div>
+          <p className="muted" style={{marginTop: 'calc(8px * var(--font-scale))'}}>Optimal min_score = 0.65 for all-MiniLM-L6-v2 (determined via 8-query threshold sweep — 100% precision/recall).</p>
+        </div>
+
+        <h3>💾 Storage</h3>
+        <div className="how-section">
+          <table className="how-table">
+            <thead><tr><th>Component</th><th>Tech</th><th>Details</th></tr></thead>
+            <tbody>
+              <tr><td>Vector DB</td><td>ChromaDB</td><td>Embedded, no server. all-MiniLM-L6-v2, 384-dim</td></tr>
+              <tr><td>Server</td><td>Python stdlib</td><td>http.server, zero framework deps</td></tr>
+              <tr><td>Dashboard</td><td>React + Vite + TS</td><td>Mobile-first, font-scale toggle</td></tr>
+              <tr><td>Embeddings</td><td>Sentence Transformers</td><td>~120MB model, loaded once at startup</td></tr>
+              <tr><td>Persistence</td><td>Filesystem</td><td>ENGRAM_DATA_DIR (default: ~/.hermes/engram_data/)</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>🔌 API</h3>
+        <div className="how-section">
+          <p>All endpoints at <code>http://host:8092/</code>. JSON request/response.</p>
+          <table className="how-table">
+            <thead><tr><th>Method</th><th>Path</th><th>Layer</th><th>Description</th></tr></thead>
+            <tbody>
+              <tr><td>GET</td><td>/health</td><td>1</td><td>Server status + memory count</td></tr>
+              <tr><td>GET</td><td>/stats</td><td>1</td><td>Memory stats by category</td></tr>
+              <tr><td>GET</td><td>/metrics</td><td>—</td><td>Query performance: hit rate, scores, log</td></tr>
+              <tr><td>POST</td><td>/remember</td><td>2</td><td>Store a memory</td></tr>
+              <tr><td>POST</td><td>/recall</td><td>2</td><td>Semantic search with scores</td></tr>
+              <tr><td>POST</td><td>/forget</td><td>2</td><td>Delete a memory</td></tr>
+              <tr><td>POST</td><td>/skills/search</td><td>3</td><td>Semantic skill search</td></tr>
+              <tr><td>POST</td><td>/skills/list</td><td>3</td><td>List indexed skills</td></tr>
+              <tr><td>POST</td><td>/procedures/*</td><td>3</td><td>Store/search/list procedures</td></tr>
+              <tr><td>POST</td><td>/episodes/*</td><td>4</td><td>Store/search/list episodes</td></tr>
+              <tr><td>POST</td><td>/reflect</td><td>5</td><td>Store a reflection</td></tr>
+              <tr><td>POST</td><td>/reflections/*</td><td>5</td><td>Search/list reflections</td></tr>
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   );
