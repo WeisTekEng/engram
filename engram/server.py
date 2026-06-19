@@ -54,6 +54,24 @@ class _Handler(BaseHTTPRequestHandler):
                 "uptime_seconds": 0,  # placeholder
             })
 
+        elif path.startswith("/assets/"):
+            # Serve React build assets
+            import os as _os_assets
+            dist_dir = _os_assets.path.join(_os_assets.path.dirname(__file__), '..', 'dashboard', 'dist')
+            asset_path = _os_assets.path.join(dist_dir, path.lstrip('/'))
+            if _os_assets.path.isfile(asset_path):
+                with open(asset_path, 'rb') as f:
+                    body = f.read()
+                ct = 'text/css' if asset_path.endswith('.css') else 'application/javascript'
+                self.send_response(200)
+                self.send_header("Content-Type", ct)
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", "public, max-age=3600")
+                self.end_headers()
+                self.wfile.write(body)
+            else:
+                self._json({"error": "not found"}, status=404)
+
         elif path == "/stats":
             self._json(self.engram.stats())
 
@@ -76,7 +94,21 @@ class _Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
 
         else:
-            self._json({"error": "not found"}, status=404)
+            # Try serving from dashboard dist (favicon, icons, etc.)
+            import os as _os_static
+            dist_dir = _os_static.path.join(_os_static.path.dirname(__file__), '..', 'dashboard', 'dist')
+            asset_path = _os_static.path.join(dist_dir, path.lstrip('/'))
+            if _os_static.path.isfile(asset_path):
+                with open(asset_path, 'rb') as f:
+                    body = f.read()
+                ct = 'image/svg+xml' if asset_path.endswith('.svg') else 'application/octet-stream'
+                self.send_response(200)
+                self.send_header("Content-Type", ct)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            else:
+                self._json({"error": "not found"}, status=404)
 
     def do_POST(self):
         path = urlparse(self.path).path
@@ -114,6 +146,270 @@ class _Handler(BaseHTTPRequestHandler):
             data = self._read_json()
             ok = self.engram.forget(data.get("memory_id", ""))
             self._json({"status": "deleted" if ok else "not_found"})
+
+        # ── Skills endpoints (Layer 3: Procedural Memory) ──
+
+        elif path == "/skills/search":
+            data = self._read_json()
+            result = self.engram.recall(
+                query=data.get("query", ""),
+                layers=data.get("layers"),
+                limit=data.get("limit", 5),
+                min_score=data.get("min_score", 0.2),
+            )
+            # Filter to only skill-category memories
+            skill_hits = [
+                {"name": h.memory.metadata.get("skill_name", "") if h.memory.metadata else "",
+                 "description": h.memory.content,
+                 "score": h.score,
+                 "category": h.memory.metadata.get("skill_category", "") if h.memory.metadata else ""}
+                for h in result.semantic_hits
+                if h.memory.category == "skill"
+            ]
+            self._json({
+                "query": data.get("query", ""),
+                "count": len(skill_hits),
+                "skills": skill_hits,
+            })
+
+        elif path == "/skills/index":
+            # Index all skills from disk into Engram
+            import os as _os4
+            skills_dir = _os4.path.join(_os4.path.dirname(_os4.path.abspath(__file__)), "..", "..", ".hermes", "skills")
+            # Also check F: drive path
+            alt_dir = "F:/hermes/.hermes/skills"
+            indexed = 0
+            for base in [skills_dir, alt_dir]:
+                if _os4.path.isdir(base):
+                    for root, dirs, files in _os4.walk(base):
+                        for f in files:
+                            if f == "SKILL.md":
+                                skill_path = _os4.path.join(root, f)
+                                skill_name = _os4.path.basename(root)
+                                try:
+                                    with open(skill_path, encoding="utf-8") as sf:
+                                        content = sf.read()
+                                    # Extract description (first paragraph after frontmatter)
+                                    desc = content
+                                    if content.startswith("---"):
+                                        parts = content.split("---", 2)
+                                        if len(parts) >= 3:
+                                            desc = parts[2].strip().split("\n\n")[0][:500]
+                                    self.engram.remember(
+                                        content=desc,
+                                        layer=2,
+                                        category="skill",
+                                        importance=0.7,
+                                        metadata={
+                                            "skill_name": skill_name,
+                                            "skill_path": skill_path,
+                                            "skill_category": _os4.path.basename(_os4.path.dirname(root)),
+                                        },
+                                    )
+                                    indexed += 1
+                                except Exception:
+                                    pass
+            self._json({"status": "indexed", "count": indexed})
+
+        elif path == "/skills/list" or path == "/skills/list/":
+            # List skills via semantic layer directly  
+            import traceback as _tb
+            skills = []
+            error_msg = None
+            try:
+                results = self.engram._semantic.recall(
+                    query="skills",
+                    limit=200,
+                    min_score=0.0,
+                    category_filter="skill",
+                )
+                seen = set()
+                for r in results:
+                    name = r.memory.metadata.get("skill_name", "") if r.memory.metadata else ""
+                    if name and name not in seen:
+                        seen.add(name)
+                        skills.append({
+                            "name": name,
+                            "description": r.memory.content[:200] if r.memory.content else "",
+                            "category": r.memory.metadata.get("skill_category", "") if r.memory.metadata else "",
+                            "score": round(r.score, 3),
+                        })
+                error_msg = f"raw results: {len(results)}, filtered: {len(skills)}"
+            except Exception as e:
+                error_msg = f"{type(e).__name__}: {e}"
+            self._json({"skills": skills, "count": len(skills), "error": error_msg})
+
+        # ── Layer 3: Procedural Memory (workflows) ──
+
+        elif path == "/procedures/remember":
+            data = self._read_json()
+            memory_id = self.engram._semantic.remember(
+                content=data.get("content", ""),
+                category="layer3_procedural",
+                importance=data.get("importance", 0.7),
+                metadata={
+                    "name": data.get("name", ""),
+                    "steps": data.get("steps", ""),
+                    "source_session": data.get("source_session", ""),
+                    "domain": data.get("domain", ""),
+                    "created_at": data.get("created_at", ""),
+                },
+            )
+            self._json({"status": "stored", "memory_id": memory_id, "layer": 3})
+
+        elif path == "/procedures/search":
+            data = self._read_json()
+            results = self.engram._semantic.recall(
+                query=data.get("query", ""),
+                limit=data.get("limit", 20),
+                min_score=data.get("min_score", 0.2),
+                category_filter="layer3_procedural",
+            )
+            hits = [{
+                "name": r.memory.metadata.get("name", ""),
+                "content": r.memory.content[:300],
+                "steps": r.memory.metadata.get("steps", ""),
+                "domain": r.memory.metadata.get("domain", ""),
+                "score": round(r.score, 3),
+            } for r in results]
+            self._json({"query": data.get("query", ""), "count": len(hits), "procedures": hits})
+
+        elif path == "/procedures/list":
+            results = self.engram._semantic.recall(
+                query="workflow procedure process",
+                limit=200, min_score=0.0,
+                category_filter="layer3_procedural",
+            )
+            seen = set()
+            items = []
+            for r in results:
+                name = r.memory.metadata.get("name", "") if r.memory.metadata else ""
+                if name and name not in seen:
+                    seen.add(name)
+                    items.append({
+                        "name": name,
+                        "content": r.memory.content[:200],
+                        "domain": r.memory.metadata.get("domain", "") if r.memory.metadata else "",
+                        "score": round(r.score, 3),
+                    })
+            self._json({"procedures": items, "count": len(items)})
+
+        # ── Layer 4: Episodic Memory (sessions/events) ──
+
+        elif path == "/episodes/remember":
+            data = self._read_json()
+            memory_id = self.engram._semantic.remember(
+                content=data.get("content", ""),
+                category="layer4_episodic",
+                importance=data.get("importance", 0.6),
+                metadata={
+                    "title": data.get("title", ""),
+                    "session_id": data.get("session_id", ""),
+                    "timestamp": data.get("timestamp", ""),
+                    "tags": ",".join(data.get("tags", [])),
+                    "outcome": data.get("outcome", ""),
+                },
+            )
+            self._json({"status": "stored", "memory_id": memory_id, "layer": 4})
+
+        elif path == "/episodes/search":
+            data = self._read_json()
+            results = self.engram._semantic.recall(
+                query=data.get("query", ""),
+                limit=data.get("limit", 20),
+                min_score=data.get("min_score", 0.2),
+                category_filter="layer4_episodic",
+            )
+            hits = [{
+                "title": r.memory.metadata.get("title", ""),
+                "content": r.memory.content[:300],
+                "session_id": r.memory.metadata.get("session_id", ""),
+                "timestamp": r.memory.metadata.get("timestamp", ""),
+                "tags": r.memory.metadata.get("tags", ""),
+                "outcome": r.memory.metadata.get("outcome", ""),
+                "score": round(r.score, 3),
+            } for r in results]
+            self._json({"query": data.get("query", ""), "count": len(hits), "episodes": hits})
+
+        elif path == "/episodes/list":
+            results = self.engram._semantic.recall(
+                query="session conversation episode event",
+                limit=200, min_score=0.0,
+                category_filter="layer4_episodic",
+            )
+            seen = set()
+            items = []
+            for r in results:
+                title = r.memory.metadata.get("title", "") if r.memory.metadata else ""
+                if title and title not in seen:
+                    seen.add(title)
+                    items.append({
+                        "title": title,
+                        "content": r.memory.content[:200],
+                        "timestamp": r.memory.metadata.get("timestamp", "") if r.memory.metadata else "",
+                        "tags": r.memory.metadata.get("tags", "") if r.memory.metadata else "",
+                        "outcome": r.memory.metadata.get("outcome", "") if r.memory.metadata else "",
+                        "score": round(r.score, 3),
+                    })
+            self._json({"episodes": items, "count": len(items)})
+
+        # ── Layer 5: Meta/Reflective Memory ──
+
+        elif path == "/reflect":
+            data = self._read_json()
+            memory_id = self.engram._semantic.remember(
+                content=data.get("content", ""),
+                category="layer5_reflection",
+                importance=data.get("importance", 0.8),
+                metadata={
+                    "topic": data.get("topic", ""),
+                    "insight": data.get("insight", ""),
+                    "action": data.get("action", ""),
+                    "success": str(data.get("success", True)),
+                    "timestamp": data.get("timestamp", ""),
+                },
+            )
+            self._json({"status": "stored", "memory_id": memory_id, "layer": 5})
+
+        elif path == "/reflections/search":
+            data = self._read_json()
+            results = self.engram._semantic.recall(
+                query=data.get("query", ""),
+                limit=data.get("limit", 20),
+                min_score=data.get("min_score", 0.2),
+                category_filter="layer5_reflection",
+            )
+            hits = [{
+                "topic": r.memory.metadata.get("topic", ""),
+                "content": r.memory.content[:300],
+                "insight": r.memory.metadata.get("insight", ""),
+                "action": r.memory.metadata.get("action", ""),
+                "success": r.memory.metadata.get("success", ""),
+                "score": round(r.score, 3),
+            } for r in results]
+            self._json({"query": data.get("query", ""), "count": len(hits), "reflections": hits})
+
+        elif path == "/reflections/list":
+            results = self.engram._semantic.recall(
+                query="reflection insight improvement learn",
+                limit=200, min_score=0.0,
+                category_filter="layer5_reflection",
+            )
+            seen = set()
+            items = []
+            for r in results:
+                topic = r.memory.metadata.get("topic", "") if r.memory.metadata else ""
+                if topic and topic not in seen:
+                    seen.add(topic)
+                    items.append({
+                        "topic": topic,
+                        "content": r.memory.content[:200],
+                        "insight": r.memory.metadata.get("insight", "") if r.memory.metadata else "",
+                        "action": r.memory.metadata.get("action", "") if r.memory.metadata else "",
+                        "success": r.memory.metadata.get("success", "") if r.memory.metadata else "",
+                        "score": round(r.score, 3),
+                    })
+            self._json({"reflections": items, "count": len(items)})
 
         else:
             self._json({"error": "not found"}, status=404)
@@ -186,7 +482,19 @@ class EngramServer:
             self._engram = None
 
     def _build_dashboard(self) -> str:
-        """Build the dashboard HTML page."""
+        """Load React dashboard HTML from build output."""
+        import os
+        # Try React build first
+        dist_dir = os.path.join(os.path.dirname(__file__), '..', 'dashboard', 'dist')
+        html_path = os.path.join(dist_dir, 'index.html')
+        if os.path.exists(html_path):
+            with open(html_path) as f:
+                return f.read()
+        # Fallback: old dashboard.html
+        html_path = os.path.join(os.path.dirname(__file__), 'dashboard.html')
+        if os.path.exists(html_path):
+            with open(html_path) as f:
+                return f.read()
         return """<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -238,6 +546,7 @@ h1 { font-size: calc(24px * var(--font-scale)); margin-bottom: calc(16px * var(-
   <button class="tab" onclick="showTab('layer1')">Layer 1: Hot Cache</button>
   <button class="tab" onclick="showTab('layer2')">Layer 2: Semantic</button>
   <button class="tab" onclick="showTab('layer3')">Layer 3-5</button>
+  <button class="tab" onclick="showTab('search')">🔍 Search</button>
 </div>
 
 <div id="overview" class="panel active">
@@ -275,13 +584,25 @@ h1 { font-size: calc(24px * var(--font-scale)); margin-bottom: calc(16px * var(-
       Layer 5: Meta/Reflective (self-improving) — planned
     </p>
   </div>
+
+<div id="search" class="panel">
+  <div class="card">
+    <h2>🔍 Search Memories</h2>
+    <div style="display:flex;gap:8px;margin:12px 0">
+      <input id="search-input" type="text" placeholder="Search memories..." style="flex:1;padding:8px;background:var(--bg);border:1px solid var(--border);color:var(--text);font-size:inherit;border-radius:4px" onkeydown="if(event.key===Enter)searchMemories()">
+      <button onclick="searchMemories()" style="padding:8px 16px;background:var(--accent);color:var(--bg);border:none;border-radius:4px;cursor:pointer;font-size:inherit">Search</button>
+    </div>
+    <div id="search-status" style="color:var(--muted);margin-bottom:8px"></div>
+    <div id="search-results"></div>
+  </div>
+</div>
 </div>
 
 <script>
 function showTab(name) {
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
   document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
-  document.querySelector(`.tab:nth-child(${{'overview':1,'layer1':2,'layer2':3,'layer3':4}[name]})`).classList.add('active');
+  document.querySelector(`.tab:nth-child(${{'overview':1,'layer1':2,'layer2':3,'layer3':4,'search':5}[name]})`).classList.add('active');
   document.getElementById(name).classList.add('active');
   if (name === 'layer1') refreshLayer1();
   if (name === 'layer2') refreshLayer2();
@@ -325,6 +646,32 @@ async function refreshLayer2() {
     document.getElementById('l2-categories').textContent = stats.semantic_index.categories.join(', ') || 'none';
     document.getElementById('l2-model').textContent = stats.semantic_index.embedding_model;
   } catch(e) {}
+}
+
+async function searchMemories() {
+  const q = document.getElementById("search-input").value.trim();
+  if (!q) return;
+  const status = document.getElementById("search-status");
+  const results = document.getElementById("search-results");
+  status.textContent = "Searching...";
+  results.innerHTML = "";
+  try {
+    const resp = await fetch("/recall", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({query:q, min_score:0.2}) });
+    const data = await resp.json();
+    status.textContent = data.count + ' results for "' + q + '"';
+    if (!data.semantic_hits || !data.semantic_hits.length) {
+      results.innerHTML = "<p style=\"color:var(--muted)\">No results found.</p>";
+      return;
+    }
+    data.semantic_hits.forEach(h => {
+      const div = document.createElement("div");
+      div.style.cssText = "padding:8px;border-bottom:1px solid var(--border);margin-bottom:4px";
+      div.innerHTML = "<div style=\"display:flex;justify-content:space-between\"><strong>" + h.content + "</strong><span style=\"color:var(--accent);font-size:0.9em\">" + h.score.toFixed(3) + "</span></div><div style=\"color:var(--muted);font-size:0.85em\">" + h.category + "</div>";
+      results.appendChild(div);
+    });
+  } catch(e) {
+    status.textContent = "Error: " + e.message;
+  }
 }
 
 refresh();
