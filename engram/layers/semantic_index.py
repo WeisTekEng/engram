@@ -155,7 +155,7 @@ class SemanticIndex:
         # Generate query embedding
         query_embedding = self.embedding_model.embed_single(query)
 
-        # Build filter
+        # Build filter (exact match only — ChromaDB where doesn't support prefix)
         where_filter = None
         if category_filter:
             where_filter = {"category": category_filter}

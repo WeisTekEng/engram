@@ -347,26 +347,29 @@ class Engram:
     def _promote_memory(self, mem_id: str, meta: dict, importance: float, access_count: int) -> None:
         """Promote a memory to higher layers based on frequency and importance.
 
-        Thresholds lowered to be achievable in practice.
-        High-importance memories (>= 0.9) get a free promotion to L3."""
+        Thresholds lowered for practical activation:
+        L3: 2+ recalls + 0.40 importance
+        L4: 4+ recalls + 0.55 importance
+        L5: 8+ recalls + 0.70 importance
+        High-importance memories (>= 0.8) get a free promotion to L3."""
         cat = meta.get("category", "general")
         # Don't re-promote already-promoted memories
         if cat.startswith("L3_") or cat.startswith("L4_") or cat.startswith("L5_"):
             return
 
-        # High importance gate: anything >= 0.9 gets at least L3
-        if importance >= 0.9 and access_count < 3:
-            access_count = 3  # boost to L3 threshold
+        # High importance gate: anything >= 0.8 gets at least L3
+        if importance >= 0.8 and access_count < 2:
+            access_count = 2  # boost to L3 threshold
 
-        if access_count >= 12 and importance >= 0.80:
+        if access_count >= 8 and importance >= 0.70:
             # Promote to L5 (reflection)
             new_cat = f"L5_reflection_{cat}"
             meta["importance"] = min(1.0, importance + 0.1)
-        elif access_count >= 6 and importance >= 0.65:
+        elif access_count >= 4 and importance >= 0.55:
             # Promote to L4 (episodic)
             new_cat = f"L4_episodic_{cat}"
             meta["importance"] = min(1.0, importance + 0.05)
-        elif access_count >= 3 and importance >= 0.5:
+        elif access_count >= 2 and importance >= 0.40:
             # Promote to L3 (procedural)
             new_cat = f"L3_procedural_{cat}"
         else:

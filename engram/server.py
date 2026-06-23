@@ -97,7 +97,12 @@ class _Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", 0))
         if length == 0:
             return {}
-        return json.loads(self.rfile.read(length))
+        raw = self.rfile.read(length)
+        try:
+            return json.loads(raw)
+        except (UnicodeDecodeError, json.JSONDecodeError) as e:
+            logger.warning("_read_json: %s on %d-byte body", e, length)
+            return {}  # graceful fallback — don't crash the server
 
     def do_GET(self):
         path = urlparse(self.path).path
@@ -105,11 +110,15 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/health":
             stats = self.engram.stats()
             uptime = int(time.time() - self.server._start_time)
+            layers_data = stats["layers"]
             self._json({
                 "status": "ok",
                 "layers": {
-                    "1": "hot_cache",
-                    "2": "semantic_index",
+                    "1": {"name": "hot_cache", "count": layers_data.get("L1_hot", 0)},
+                    "2": {"name": "semantic_index", "count": layers_data.get("L2_semantic", 0)},
+                    "3": {"name": "procedural", "count": layers_data.get("L3_procedural", 0)},
+                    "4": {"name": "episodic", "count": layers_data.get("L4_episodic", 0)},
+                    "5": {"name": "reflection", "count": layers_data.get("L5_reflection", 0)},
                 },
                 "total_memories": stats["semantic_index"]["total_memories"],
                 "uptime_seconds": uptime,
@@ -143,6 +152,69 @@ class _Handler(BaseHTTPRequestHandler):
 
         elif path == "/stats":
             self._json(self.engram.stats())
+
+        elif path == "/skills" or path == "/skills/list":
+            # GET skills list (for dashboard browsing)
+            import traceback as _tb2
+            skills = []
+            error_msg = None
+            try:
+                results = self.engram._semantic.recall(
+                    query="skills",
+                    limit=200,
+                    min_score=0.0,
+                    category_filter="skill",
+                )
+                seen = set()
+                for r in results:
+                    name = r.memory.metadata.get("skill_name", "") if r.memory.metadata else ""
+                    if name and name not in seen:
+                        seen.add(name)
+                        skills.append({
+                            "name": name,
+                            "description": r.memory.content[:200] if r.memory.content else "",
+                            "category": r.memory.metadata.get("skill_category", "") if r.memory.metadata else "",
+                            "score": round(r.score, 3),
+                        })
+            except Exception as e:
+                error_msg = f"{type(e).__name__}: {e}"
+            self._json({"skills": skills, "count": len(skills), "error": error_msg})
+
+        elif path == "/episodes/list":
+            # GET: list all episodes
+            result = self.engram.recall(
+                query="session conversation episode event",
+                layers=[4],
+                limit=200, min_score=0.0,
+            )
+            self._json({"episodes": [
+                {"content": r[:300]} for r in result.episodic_matches[:50]
+                if r
+            ], "count": len(result.episodic_matches)})
+
+        elif path == "/reflections/list":
+            # GET: list all reflections
+            result = self.engram.recall(
+                query="reflection insight improvement learn",
+                layers=[5],
+                limit=200, min_score=0.0,
+            )
+            self._json({"reflections": [
+                {"content": r[:300]} for r in result.reflection_matches[:50]
+                if r
+            ], "count": len(result.reflection_matches)})
+
+        elif path == "/procedures/list":
+            # GET: list all procedures
+            result = self.engram.recall(
+                query="workflow procedure process",
+                layers=[3],
+                limit=200, min_score=0.0,
+            )
+            self._json({"procedures": [
+                {"content": r[:300]} for r in result.procedural_matches[:50]
+                if r
+            ], "count": len(result.procedural_matches)})
 
         elif path == "/layers":
             stats = self.engram.stats()
@@ -241,14 +313,14 @@ class _Handler(BaseHTTPRequestHandler):
                 limit=data.get("limit", 5),
                 min_score=data.get("min_score", 0.2),
             )
-            # Filter to only skill-category memories
+            # Filter to only skill-category memories (categories may be "skill", "procedural_skill", "episodic_skill", etc. after consolidation)
             skill_hits = [
                 {"name": h.memory.metadata.get("skill_name", "") if h.memory.metadata else "",
                  "description": h.memory.content,
                  "score": h.score,
                  "category": h.memory.metadata.get("skill_category", "") if h.memory.metadata else ""}
                 for h in result.semantic_hits
-                if h.memory.category == "skill"
+                if "skill" in (h.memory.category or "")
             ]
             self._json({
                 "query": data.get("query", ""),
@@ -259,56 +331,67 @@ class _Handler(BaseHTTPRequestHandler):
         elif path == "/skills/index":
             # Index all skills from disk into Engram
             import os as _os4
+            import hashlib as _hl
             skills_dir = _os4.path.join(_os4.path.dirname(_os4.path.abspath(__file__)), "..", "..", ".hermes", "skills")
-            # Also check F: drive path
-            alt_dir = "F:/hermes/.hermes/skills"
+            # Try F: drive path if relative path doesn't exist (same dir, avoid double-scan)
+            if not _os4.path.isdir(skills_dir):
+                skills_dir = "F:/hermes/.hermes/skills"
             indexed = 0
-            for base in [skills_dir, alt_dir]:
-                if _os4.path.isdir(base):
-                    for root, dirs, files in _os4.walk(base):
-                        for f in files:
-                            if f == "SKILL.md":
-                                skill_path = _os4.path.join(root, f)
-                                skill_name = _os4.path.basename(root)
-                                try:
-                                    with open(skill_path, encoding="utf-8") as sf:
-                                        content = sf.read()
-                                    # Extract description (first paragraph after frontmatter)
-                                    desc = content
-                                    if content.startswith("---"):
-                                        parts = content.split("---", 2)
-                                        if len(parts) >= 3:
-                                            desc = parts[2].strip().split("\n\n")[0][:500]
-                                    self.engram.remember(
-                                        content=desc,
-                                        layer=2,
-                                        category="skill",
-                                        importance=0.7,
-                                        metadata={
-                                            "skill_name": skill_name,
-                                            "skill_path": skill_path,
-                                            "skill_category": _os4.path.basename(_os4.path.dirname(root)),
-                                        },
-                                    )
-                                    indexed += 1
-                                except Exception:
-                                    pass
-            self._json({"status": "indexed", "count": indexed})
+            skipped_dupes = 0
+            content_hashes = set()
+            if _os4.path.isdir(skills_dir):
+                for root, dirs, files in _os4.walk(skills_dir):
+                    for f in files:
+                        if f == "SKILL.md":
+                            skill_path = _os4.path.join(root, f)
+                            skill_name = _os4.path.basename(root)
+                            try:
+                                with open(skill_path, encoding="utf-8") as sf:
+                                    content = sf.read()
+                                # Dedup guard: skip if identical content hash already seen
+                                content_hash = _hl.sha256(content.encode()).hexdigest()
+                                if content_hash in content_hashes:
+                                    skipped_dupes += 1
+                                    continue
+                                content_hashes.add(content_hash)
+                                # Extract description (first paragraph after frontmatter)
+                                desc = content
+                                if content.startswith("---"):
+                                    parts = content.split("---", 2)
+                                    if len(parts) >= 3:
+                                        desc = parts[2].strip().split("\n\n")[0][:500]
+                                self.engram._push_hot(desc)
+                                self.engram._semantic.remember(
+                                    content=desc,
+                                    category="skill",
+                                    importance=0.7,
+                                    metadata={
+                                        "skill_name": skill_name,
+                                        "skill_path": skill_path,
+                                        "skill_category": _os4.path.basename(_os4.path.dirname(root)),
+                                    },
+                                )
+                                indexed += 1
+                            except Exception:
+                                pass
+            self._json({"status": "indexed", "count": indexed, "skipped_duplicates": skipped_dupes})
 
         elif path == "/skills/list" or path == "/skills/list/":
-            # List skills via semantic layer directly  
+            # List skills via semantic layer — filter in Python (ChromaDB doesn't support partial category match)
             import traceback as _tb
             skills = []
             error_msg = None
             try:
                 results = self.engram._semantic.recall(
                     query="skills",
-                    limit=200,
+                    limit=400,
                     min_score=0.0,
-                    category_filter="skill",
                 )
                 seen = set()
                 for r in results:
+                    # Filter to skill-category memories only (may be "skill", "procedural_skill", etc.)
+                    if "skill" not in (r.memory.category or ""):
+                        continue
                     name = r.memory.metadata.get("skill_name", "") if r.memory.metadata else ""
                     if name and name not in seen:
                         seen.add(name)
@@ -323,13 +406,65 @@ class _Handler(BaseHTTPRequestHandler):
                 error_msg = f"{type(e).__name__}: {e}"
             self._json({"skills": skills, "count": len(skills), "error": error_msg})
 
+        # ── Session → L4 auto-feed ──
+        elif path == "/sessions/complete":
+            # Called after a Hermes session ends to auto-store an episodic summary.
+            # Auto-promotes key decisions and outcomes into L4 episodic memory.
+            data = self._read_json()
+            summary = data.get("summary", "")
+            decisions = data.get("decisions", [])
+            files_changed = data.get("files_changed", [])
+            outcome = data.get("outcome", "completed")
+            session_id = data.get("session_id", "")
+            timestamp = data.get("timestamp", "")
+
+            if not summary:
+                self._json({"status": "error", "message": "summary required"})
+                return
+
+            # Build structured episodic content
+            parts = [f"Session: {session_id}", f"Outcome: {outcome}"]
+            if decisions:
+                parts.append("Key decisions: " + "; ".join(decisions[:5]))
+            if files_changed:
+                parts.append(f"Files changed: {len(files_changed)}")
+            parts.append(summary)
+
+            content = " | ".join(parts)
+
+            memory_id = self.engram._semantic.remember(
+                content=content,
+                category="L4_episodic_session",
+                importance=data.get("importance", 0.75),
+                metadata={
+                    "session_id": session_id,
+                    "timestamp": timestamp,
+                    "outcome": outcome,
+                    "title": data.get("title", summary[:80]),
+                    "tags": ",".join(data.get("tags", [])[:10]),
+                    "decisions": ",".join(decisions[:5]),
+                    "files_changed_count": str(len(files_changed)),
+                    "source": "hermes-session-auto-feed",
+                },
+            )
+            total_sessions = len(self.engram._semantic.recall(
+                query="session", category_filter="L4_episodic_session", limit=200, min_score=0
+            )) if hasattr(self.engram._semantic, 'recall') else 1
+
+            self._json({
+                "status": "stored",
+                "memory_id": memory_id,
+                "layer": 4,
+                "total_sessions": total_sessions,
+            })
+
         # ── Layer 3: Procedural Memory (workflows) ──
 
         elif path == "/procedures/remember":
             data = self._read_json()
             memory_id = self.engram._semantic.remember(
                 content=data.get("content", ""),
-                category="layer3_procedural",
+                category="L3_procedural_procedural",
                 importance=data.get("importance", 0.7),
                 metadata={
                     "name": data.get("name", ""),
@@ -343,39 +478,28 @@ class _Handler(BaseHTTPRequestHandler):
 
         elif path == "/procedures/search":
             data = self._read_json()
-            results = self.engram._semantic.recall(
+            result = self.engram.recall(
                 query=data.get("query", ""),
-                limit=data.get("limit", 20),
+                layers=[3],
+                limit=30,
                 min_score=data.get("min_score", 0.2),
-                category_filter="layer3_procedural",
             )
-            hits = [{
-                "name": r.memory.metadata.get("name", ""),
-                "content": r.memory.content[:300],
-                "steps": r.memory.metadata.get("steps", ""),
-                "domain": r.memory.metadata.get("domain", ""),
-                "score": round(r.score, 3),
-            } for r in results]
+            hits = [{"name": "", "content": r[:300], "steps": "", "domain": "", "score": 1.0}
+                    for r in result.procedural_matches[:20]]
             self._json({"query": data.get("query", ""), "count": len(hits), "procedures": hits})
 
         elif path == "/procedures/list":
-            results = self.engram._semantic.recall(
+            result = self.engram.recall(
                 query="workflow procedure process",
+                layers=[3],
                 limit=200, min_score=0.0,
-                category_filter="layer3_procedural",
             )
             seen = set()
             items = []
-            for r in results:
-                name = r.memory.metadata.get("name", "") if r.memory.metadata else ""
-                if name and name not in seen:
-                    seen.add(name)
-                    items.append({
-                        "name": name,
-                        "content": r.memory.content[:200],
-                        "domain": r.memory.metadata.get("domain", "") if r.memory.metadata else "",
-                        "score": round(r.score, 3),
-                    })
+            for r in result.procedural_matches[:50]:
+                if r and r not in seen:
+                    seen.add(r)
+                    items.append({"name": "", "content": r[:200], "domain": "", "score": 1.0})
             self._json({"procedures": items, "count": len(items)})
 
         # ── Layer 4: Episodic Memory (sessions/events) ──
@@ -384,7 +508,7 @@ class _Handler(BaseHTTPRequestHandler):
             data = self._read_json()
             memory_id = self.engram._semantic.remember(
                 content=data.get("content", ""),
-                category="layer4_episodic",
+                category="L4_episodic_session",
                 importance=data.get("importance", 0.6),
                 metadata={
                     "title": data.get("title", ""),
@@ -398,44 +522,71 @@ class _Handler(BaseHTTPRequestHandler):
 
         elif path == "/episodes/search":
             data = self._read_json()
-            results = self.engram._semantic.recall(
+            result = self.engram.recall(
                 query=data.get("query", ""),
-                limit=data.get("limit", 20),
+                layers=[4],
+                limit=30,
                 min_score=data.get("min_score", 0.2),
-                category_filter="layer4_episodic",
             )
-            hits = [{
-                "title": r.memory.metadata.get("title", ""),
-                "content": r.memory.content[:300],
-                "session_id": r.memory.metadata.get("session_id", ""),
-                "timestamp": r.memory.metadata.get("timestamp", ""),
-                "tags": r.memory.metadata.get("tags", ""),
-                "outcome": r.memory.metadata.get("outcome", ""),
-                "score": round(r.score, 3),
-            } for r in results]
+            hits = [{"title": "", "content": r[:300], "session_id": "", "timestamp": "",
+                     "tags": "", "outcome": "", "score": 1.0}
+                    for r in result.episodic_matches[:20]]
             self._json({"query": data.get("query", ""), "count": len(hits), "episodes": hits})
 
         elif path == "/episodes/list":
-            results = self.engram._semantic.recall(
-                query="session conversation episode event",
-                limit=200, min_score=0.0,
-                category_filter="layer4_episodic",
-            )
-            seen = set()
-            items = []
-            for r in results:
-                title = r.memory.metadata.get("title", "") if r.memory.metadata else ""
-                if title and title not in seen:
-                    seen.add(title)
+            # Query L4 via core.recall then extract metadata from _semantic
+            try:
+                result = self.engram.recall(
+                    query="session episode event",
+                    layers=[4],
+                    limit=200, min_score=0.0,
+                )
+                seen = set()
+                items = []
+                for content in result.episodic_matches[:80]:
+                    if not content or content in seen:
+                        continue
+                    seen.add(content)
+                    # Try to look up metadata from _semantic for this content
+                    title = ""
+                    timestamp = ""
+                    tags = ""
+                    outcome = ""
+                    sid = ""
+                    score = 1.0
+                    try:
+                        matches = self.engram._semantic.recall(
+                            query=content[:80], limit=1, min_score=0.7,
+                        )
+                        if matches and matches[0].memory:
+                            meta = matches[0].memory.metadata or {}
+                            title = meta.get("title", "")
+                            timestamp = meta.get("timestamp", "")
+                            tags = meta.get("tags", "")
+                            outcome = meta.get("outcome", "")
+                            sid = meta.get("session_id", "")
+                            score = round(matches[0].score, 3)
+                    except Exception:
+                        pass
+                    if not title:
+                        first_line = content.split("\n")[0].strip("# ").strip()
+                        if len(first_line) > 3:
+                            title = first_line[:80]
+                        else:
+                            title = content[:80].replace(" | ", " ").strip()
                     items.append({
                         "title": title,
-                        "content": r.memory.content[:200],
-                        "timestamp": r.memory.metadata.get("timestamp", "") if r.memory.metadata else "",
-                        "tags": r.memory.metadata.get("tags", "") if r.memory.metadata else "",
-                        "outcome": r.memory.metadata.get("outcome", "") if r.memory.metadata else "",
-                        "score": round(r.score, 3),
+                        "content": content[:300],
+                        "timestamp": timestamp,
+                        "tags": tags,
+                        "outcome": outcome,
+                        "session_id": sid,
+                        "score": score,
                     })
-            self._json({"episodes": items, "count": len(items)})
+                self._json({"episodes": items, "count": len(items)})
+            except Exception as e:
+                import traceback
+                self._json({"episodes": [], "count": 0, "error": str(e), "trace": traceback.format_exc()[-300:]})
 
         # ── Layer 5: Meta/Reflective Memory ──
 
@@ -443,7 +594,7 @@ class _Handler(BaseHTTPRequestHandler):
             data = self._read_json()
             memory_id = self.engram._semantic.remember(
                 content=data.get("content", ""),
-                category="layer5_reflection",
+                category="L5_reflection_insight",
                 importance=data.get("importance", 0.8),
                 metadata={
                     "topic": data.get("topic", ""),
@@ -457,41 +608,35 @@ class _Handler(BaseHTTPRequestHandler):
 
         elif path == "/reflections/search":
             data = self._read_json()
-            results = self.engram._semantic.recall(
+            result = self.engram.recall(
                 query=data.get("query", ""),
-                limit=data.get("limit", 20),
+                layers=[5],
+                limit=30,
                 min_score=data.get("min_score", 0.2),
-                category_filter="layer5_reflection",
             )
-            hits = [{
-                "topic": r.memory.metadata.get("topic", ""),
-                "content": r.memory.content[:300],
-                "insight": r.memory.metadata.get("insight", ""),
-                "action": r.memory.metadata.get("action", ""),
-                "success": r.memory.metadata.get("success", ""),
-                "score": round(r.score, 3),
-            } for r in results]
+            hits = [{"topic": "", "content": r[:300], "insight": "", "action": "",
+                     "success": "", "score": 1.0}
+                    for r in result.reflection_matches[:20]]
             self._json({"query": data.get("query", ""), "count": len(hits), "reflections": hits})
 
         elif path == "/reflections/list":
-            results = self.engram._semantic.recall(
+            result = self.engram.recall(
                 query="reflection insight improvement learn",
+                layers=[5],
                 limit=200, min_score=0.0,
-                category_filter="layer5_reflection",
             )
             seen = set()
             items = []
-            for r in results:
-                topic = r.memory.metadata.get("topic", "") if r.memory.metadata else ""
-                if topic and topic not in seen:
-                    seen.add(topic)
+            for r in result.reflection_matches[:50]:
+                if r and r not in seen:
+                    seen.add(r)
                     items.append({
-                        "topic": topic,
-                        "content": r.memory.content[:200],
-                        "insight": r.memory.metadata.get("insight", "") if r.memory.metadata else "",
-                        "action": r.memory.metadata.get("action", "") if r.memory.metadata else "",
-                        "success": r.memory.metadata.get("success", "") if r.memory.metadata else "",
-                        "score": round(r.score, 3),
+                        "topic": "",
+                        "content": r[:200],
+                        "insight": "",
+                        "action": "",
+                        "success": "",
+                        "score": 1.0,
                     })
             self._json({"reflections": items, "count": len(items)})
 

@@ -82,15 +82,25 @@ function OverviewPanel() {
   if (error) return <div className="card error">⚠️ {error}</div>;
   if (!health || !stats) return <div className="card loading">Loading...</div>;
 
+  const layers = health.layers as Record<string, {name: string; count: number}>;
+
   return (
     <div className="panel">
       <div className="card">
         <h2>Overview</h2>
         <div className="stat"><span>Status</span><span className={health.status === 'ok' ? 'green' : 'orange'}>{health.status}</span></div>
-        <div className="stat"><span>Total Memories</span><span>{stats.semantic_index.total_memories}</span></div>
-        <div className="stat"><span>Hot Cache</span><span>{stats.hot_cache_size}</span></div>
-        <div className="stat"><span>Categories</span><span>{stats.semantic_index.categories.join(', ') || 'none'}</span></div>
-        <div className="stat"><span>Model</span><span>{stats.semantic_index.embedding_model} ({stats.semantic_index.embedding_dims}d)</span></div>
+        <div className="stat"><span>Total Memories</span><span>{health.total_memories}</span></div>
+        <div className="stat"><span>Uptime</span><span>{Math.floor(health.uptime_seconds / 60)}m {health.uptime_seconds % 60}s</span></div>
+
+        <h3 style={{ marginTop: 'calc(16px * var(--font-scale))' }}>📚 Layer Distribution</h3>
+        <div className="metrics-grid">
+          {['1','2','3','4','5'].map(l => (
+            <div key={l} className="metric-box">
+              <div className="metric-value">{layers?.[l]?.count ?? 0}</div>
+              <div className="metric-label">L{l}: {layers?.[l]?.name ?? '\u2014'}</div>
+            </div>
+          ))}
+        </div>
 
         {metrics && (
           <>
@@ -243,12 +253,12 @@ function Layer4Panel() {
             {display.map((e, i) => (
               <div key={i} className="layer-item">
                 <div className="layer-item-header">
-                  <strong>{e.title}</strong>
+                  <strong>{e.title || `Episode ${i + 1}`}</strong>
                   {e.score && <span className="badge">{e.score.toFixed(2)}</span>}
                 </div>
-                <div className="layer-item-meta">{e.timestamp} · {e.outcome}</div>
+                {(e.timestamp || e.outcome) && <div className="layer-item-meta">{e.timestamp}{e.timestamp && e.outcome ? ' · ' : ''}{e.outcome}</div>}
                 <div className="layer-item-desc">{e.content?.slice(0, 200)}</div>
-                {e.tags && <div className="layer-item-tags">{e.tags.split(',').map((t: string) => <span key={t} className="tag">{t.trim()}</span>)}</div>}
+                {e.tags && e.tags.length > 0 && <div className="layer-item-tags">{e.tags.split(',').map((t: string) => <span key={t} className="tag">{t.trim()}</span>)}</div>}
               </div>
             ))}
           </div>}
@@ -423,7 +433,7 @@ function HowPanel() {
             <div className="flow-num">3</div>
             <div className="flow-body">
               <strong>Layer 3: Procedural</strong>
-              <p><em>Auto-promoted from L2:</em> memories recalled ≥ 8 times with importance ≥ 0.6 become workflows/procedures.</p>
+              <p><em>Auto-promoted from L2:</em> memories recalled ≥ 2 times with importance ≥ 0.40 become workflows/procedures.</p>
             </div>
           </div>
           <div className="flow-arrow">↓</div>
@@ -431,7 +441,7 @@ function HowPanel() {
             <div className="flow-num">4</div>
             <div className="flow-body">
               <strong>Layer 4: Episodic</strong>
-              <p><em>Auto-promoted from L3:</em> memories recalled ≥ 15 times with importance ≥ 0.75 become session patterns.</p>
+              <p><em>Auto-promoted from L3:</em> memories recalled ≥ 4 times with importance ≥ 0.55 become session patterns.</p>
             </div>
           </div>
           <div className="flow-arrow">↓</div>
@@ -439,7 +449,7 @@ function HowPanel() {
             <div className="flow-num">5</div>
             <div className="flow-body">
               <strong>Layer 5: Reflective</strong>
-              <p><em>Auto-promoted from L4:</em> memories recalled ≥ 25 times with importance ≥ 0.85 become hardened insights.</p>
+              <p><em>Auto-promoted from L4:</em> memories recalled ≥ 8 times with importance ≥ 0.70 become hardened insights.</p>
             </div>
           </div>
         </div>
@@ -447,11 +457,22 @@ function HowPanel() {
         <h3>⚙️ Automation Pipeline (no cron)</h3>
         <div className="how-section">
           <div className="how-steps">
-            <div className="how-step"><span>1</span> <strong>Dedup-on-write:</strong> Before every store, semantic check at 0.85. Duplicate = merge importance, return existing ID. No cruft.</div>
-            <div className="how-step"><span>2</span> <strong>Auto-consolidation:</strong> Daemon thread every 30 min. Decays memories {">"}30 days old (reduces importance by age). Purges entries below 0.05.</div>
-            <div className="how-step"><span>3</span> <strong>Layer promotion:</strong> In the same consolidation tick, frequently-recalled memories graduate: L2→L3 (8 recalls), L3→L4 (15), L4→L5 (25).</div>
-            <div className="how-step"><span>4</span> <strong>L1 persistence:</strong> Hot cache saves to l1_hot_cache.json on shutdown, reloads on startup. Self-pruning at 30 items.</div>
-            <div className="how-step"><span>5</span> <strong>Unified recall:</strong> One POST /recall searches all 5 layers. Ranked by combined_score = semantic × 0.6 + importance × 0.4.</div>
+            <div className="how-step"><span>1</span> <strong>Dedup-on-write:</strong> Every store checks semantic similarity at 0.85. Duplicate merges importance, returns existing ID. Skills index also uses SHA256 content-hash dedup within a batch. No duplicate cruft.</div>
+            <div className="how-step"><span>2</span> <strong>Auto-consolidation:</strong> Daemon thread every 30 min. Decays memories older than 30 days. Purges entries below 0.05 importance. Zero cron dependency.</div>
+            <div className="how-step"><span>3</span> <strong>Layer promotion:</strong> Frequently-recalled L2 memories auto-graduate: L2→L3 (2 recalls + 0.40 imp), L3→L4 (4 + 0.55), L4→L5 (8 + 0.70). Access counts incremented on every recall.</div>
+            <div className="how-step"><span>4</span> <strong>L1 persistence:</strong> Hot cache auto-saved to l1_hot_cache.json on graceful shutdown, reloaded on restart. Self-pruning keeps last 30 items.</div>
+            <div className="how-step"><span>5</span> <strong>Unified recall:</strong> One POST /recall searches all 5 layers simultaneously. Ranked by combined_score = semantic × 0.6 + importance × 0.4.</div>
+          </div>
+        </div>
+
+        <h3>🔄 How Hermes Uses Engram</h3>
+        <div className="how-section">
+          <div className="how-steps">
+            <div className="how-step"><span>A</span> <strong>Every turn, first:</strong> Query POST /skills/search for skills (score &gt; 0.4) and POST /recall for memories (min 0.3). Engram is the primary source of truth.</div>
+            <div className="how-step"><span>B</span> <strong>Fallback only:</strong> If Engram is unreachable, fall back to traditional skill list and SQLite memory tool. Engram-first, Hermes-memory-second.</div>
+            <div className="how-step"><span>C</span> <strong>Store everything:</strong> Every new fact → both Engram POST /remember (full detail) and Hermes memory tool (compact). Dual-write prevents data loss.</div>
+            <div className="how-step"><span>D</span> <strong>Session complete:</strong> At end of session, call POST /sessions/complete → auto-stored as L4 episodic memory. Builds timeline.</div>
+            <div className="how-step"><span>E</span> <strong>Bootstrap on restart:</strong> bootstrap_environment.py pre-loads 10 critical facts. Safe for re-runs via auto-dedup.</div>
           </div>
         </div>
 
@@ -478,15 +499,23 @@ function HowPanel() {
           <table className="how-table">
             <thead><tr><th>Method</th><th>Path</th><th>Layer</th><th>Description</th></tr></thead>
             <tbody>
-              <tr><td>GET</td><td>/health</td><td>-</td><td>Alive check</td></tr>
-              <tr><td>GET</td><td>/stats</td><td>-</td><td>Layer counts + consolidation status</td></tr>
-              <tr><td>POST</td><td>/remember</td><td>2</td><td>Store (dedup auto-applied)</td></tr>
-              <tr><td>POST</td><td>/recall</td><td>1-5</td><td>Unified search: hot_cache + unified ranked + per-layer buckets</td></tr>
-              <tr><td>POST</td><td>/consolidate</td><td>-</td><td>Manual consolidation tick</td></tr>
-              <tr><td>POST</td><td>/skills/search</td><td>3</td><td>Find skills</td></tr>
+              <tr><td>GET</td><td>/health</td><td>-</td><td>Alive check + per-layer counts</td></tr>
+              <tr><td>GET</td><td>/stats</td><td>-</td><td>Full stats + consolidation status</td></tr>
+              <tr><td>GET</td><td>/layers</td><td>-</td><td>Layer distribution summary</td></tr>
+              <tr><td>GET</td><td>/hot-cache</td><td>1</td><td>Raw L1 items (unfiltered)</td></tr>
+              <tr><td>GET</td><td>/metrics</td><td>-</td><td>Query metrics and hit rates</td></tr>
+              <tr><td>POST</td><td>/remember</td><td>2</td><td>Store memory (auto-dedup)</td></tr>
+              <tr><td>POST</td><td>/recall</td><td>1-5</td><td>Unified cross-layer search</td></tr>
+              <tr><td>POST</td><td>/consolidate</td><td>-</td><td>Manual consolidation + promotion</td></tr>
+              <tr><td>POST</td><td>/forget</td><td>2</td><td>Delete memory by ID</td></tr>
+              <tr><td>POST</td><td>/sessions/complete</td><td>4</td><td>Hermes session auto-feed</td></tr>
+              <tr><td>POST</td><td>/skills/index</td><td>2</td><td>Index SKILL.md files (SHA256 dedup)</td></tr>
+              <tr><td>POST</td><td>/skills/search</td><td>2</td><td>Semantic skill search</td></tr>
+              <tr><td>POST</td><td>/skills/list</td><td>2</td><td>List all indexed skills</td></tr>
               <tr><td>POST</td><td>/procedures/*</td><td>3</td><td>Store/search/list procedures</td></tr>
               <tr><td>POST</td><td>/episodes/*</td><td>4</td><td>Store/search/list episodes</td></tr>
-              <tr><td>POST</td><td>/reflect|reflections/*</td><td>5</td><td>Store/search/list reflections</td></tr>
+              <tr><td>POST</td><td>/reflect</td><td>5</td><td>Store a reflection</td></tr>
+              <tr><td>POST</td><td>/reflections/*</td><td>5</td><td>Search/list reflections</td></tr>
             </tbody>
           </table>
         </div>
