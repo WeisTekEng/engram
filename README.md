@@ -20,19 +20,15 @@ Layer 2 (Semantic Index) is the biggest lever — instead of dumping ALL memorie
 
 All endpoints at `http://<host>:8092/`. JSON request/response.
 
-### Layer 1: Hot Cache
+### Core Memory
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/health` | Server health check |
+| GET | `/health` | Server health + layer counts |
 | GET | `/stats` | Memory stats (count, categories, persistence) |
 | GET | `/layers` | List all available layers |
-
-### Layer 2: Semantic Index
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/remember` | Store a memory `{"text": "...", "category": "general"}` |
-| POST | `/recall` | Search memories `{"query": "...", "category": "all", "limit": 5}` |
-| POST | `/forget` | Delete a memory `{"text": "..."}` |
+| POST | `/remember` | Store a memory `{"content": "...", "category": "skill", "importance": 0.7, "metadata": {...}}` |
+| POST | `/recall` | Search all layers `{"query": "...", "limit": 10, "min_score": 0.3}` |
+| POST | `/forget` | Delete a memory `{"memory_id": "..."}` |
 
 ### Layer 3: Procedural
 | Method | Path | Description |
@@ -46,7 +42,8 @@ All endpoints at `http://<host>:8092/`. JSON request/response.
 |--------|------|-------------|
 | POST | `/episodes/remember` | Store an episode `{"text": "...", "summary": "...", "tags": [...]}` |
 | POST | `/episodes/search` | Search episodes `{"query": "..."}` |
-| POST | `/episodes/list` | List all episodes |
+| POST | `/episodes/list` | List all episodes with full metadata (title, tags, timestamp, outcome) |
+| POST | `/sessions/complete` | Auto-store session summary → Layer 4 episodic |
 
 ### Layer 5: Reflective
 | Method | Path | Description |
@@ -59,13 +56,33 @@ All endpoints at `http://<host>:8092/`. JSON request/response.
 | Method | Path | Description |
 |--------|------|-------------|
 | POST | `/skills/search` | Semantic skill search `{"query": "..."}` |
-| POST | `/skills/list` | List all indexed skills |
-| POST | `/skills/index` | Re-index skills from Hermes skills directory |
+| POST | `/skills/list` | List all indexed skills (115+) with names and categories |
+| POST | `/skills/index` | Re-index all skills from Hermes skills directory. Uses SHA256 content-hash dedup and direct ChromaDB writes to bypass semantic dedup (avoids >85% similarity merging of similar SKILL.md files) |
 
 ### Dashboard
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/dashboard` | React SPA with 8 tabs (Overview, Layers 1-5, Skills, Search) |
+| GET | `/dashboard` | React SPA with 9 tabs: Overview, L1-L5, Skills, Search, How |
+
+## Key Features
+
+### Dedup Pipeline
+- **Write-time**: SHA256 content-hash dedup in `/skills/index` — identical content skipped within a batch
+- **Semantic dedup**: `Engram.remember()` checks ≥85% cosine similarity and boosts importance instead of creating duplicates (disabled for skills via `_semantic.remember()` bypass)
+- **Consolidation**: Background daemon promotes frequently-accessed L2 memories to L3/L4/L5 based on recall count and importance thresholds
+
+### Consolidation Thresholds
+| Promotion | Min Recalls | Min Importance |
+|-----------|-------------|----------------|
+| L2 → L3 (Procedural) | 4 | 0.55 |
+| L3 → L4 (Episodic) | 8 | 0.70 |
+| L4 → L5 (Reflective) | 12 | 0.80 |
+
+### Category Prefix Convention
+Consolidation prepends layer prefixes to categories:
+- `skill` → `procedural_skill` (L3) or `episodic_skill` (L4)
+- `general` → `L3_general`, `L4_general`, etc.
+- Search endpoints use substring matching (`"skill" in category`) to handle all variants
 
 ## Running
 
@@ -77,7 +94,7 @@ python -m engram.server --port 8092
 
 Env vars:
 - `ENGRAM_DATA_DIR` — ChromaDB persistence path (default: `~/.hermes/engram_data/`)
-- `ENGRAM_SKILLS_DIR` — Path to Hermes skills for `/skills/index`
+- `ENGRAM_HOST` — Bind address (default: `127.0.0.1`)
 
 ## Tech Stack
 
@@ -88,7 +105,7 @@ Env vars:
 
 ## Status
 
-🟢 Active — all 5 layers live with 463+ memories. Dashboard at `/dashboard`.
+🟢 Active — all 5 layers live with 290+ memories, 115 indexed skills. Dashboard at `/dashboard`.
 
 ## License
 
