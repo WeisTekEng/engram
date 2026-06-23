@@ -1,10 +1,10 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
-  fetchHealth, fetchStats, fetchSkills, searchSkills, searchMemories, recallLayer1,
+  fetchHealth, fetchStats, fetchSkills, searchSkills, searchMemories,
   fetchProcedures, searchProcedures,
   fetchEpisodes, searchEpisodes,
   fetchReflections, searchReflections,
-  fetchMetrics,
+  fetchMetrics, fetchHotCache,
 } from './api';
 import './App.css';
 
@@ -129,12 +129,13 @@ function OverviewPanel() {
 
 function Layer1Panel() {
   const [items, setItems] = useState<string[]>([]);
-  useEffect(() => { recallLayer1().then(setItems).catch(() => {}); }, []);
+  const [total, setTotal] = useState(0);
+  useEffect(() => { fetchHotCache().then(d => { setItems(d.items); setTotal(d.total); }).catch(() => {}); }, []);
   return (
     <div className="panel">
       <div className="card">
         <h2>Layer 1: Hot Cache</h2>
-        <p className="muted">Always-injected, high-priority context</p>
+        <p className="muted">Always-injected, high-priority context (showing {items.length} of {total} total)</p>
         {items.length ? <ul className="item-list">{items.map((m, i) => <li key={i}>{m}</li>)}</ul> : <p className="muted">Empty</p>}
       </div>
     </div>
@@ -399,74 +400,64 @@ function HowPanel() {
     <div className="panel">
       <div className="card how-page">
         <h2>🧠 How Engram Works</h2>
-        <p className="muted">A 5-layer memory architecture that gives AI agents durable, retrievable memory with intelligent token budgeting.</p>
+        <p className="muted">A self-contained 5-layer memory system with NO external cron jobs. Everything runs inside the Engram process.</p>
 
         <div className="how-flow">
           <div className="flow-step">
             <div className="flow-num">1</div>
             <div className="flow-body">
-              <strong>Hot Cache</strong>
-              <p>Always-injected, high-priority context. 200-char cap. Current task, active constraints, immediate preferences. Fixed token overhead — always loaded.</p>
+              <strong>Layer 1: Hot Cache</strong>
+              <p>In-memory, persisted to disk. Auto-populated from every write and every recall top hit. Last 30 items kept, last 15 returned. Survives restarts via JSON dump/load.</p>
             </div>
           </div>
           <div className="flow-arrow">↓</div>
           <div className="flow-step">
             <div className="flow-num">2</div>
             <div className="flow-body">
-              <strong>Semantic Index</strong>
-              <p>Vector embeddings in ChromaDB (all-MiniLM-L6-v2, 384-dim). Every memory gets an embedding. On recall, cosine similarity finds the most relevant memories. Only injected when relevance exceeds threshold (0.65). Single biggest token saver.</p>
+              <strong>Layer 2: Semantic Index</strong>
+              <p>ChromaDB (all-MiniLM-L6-v2, 384-dim). All new memories land here. <strong>Dedup-on-write:</strong> content with score ≥ 0.85 merges instead of duplicating (returns existing ID, boosts importance).</p>
             </div>
           </div>
           <div className="flow-arrow">↓</div>
           <div className="flow-step">
             <div className="flow-num">3</div>
             <div className="flow-body">
-              <strong>Procedural Memory</strong>
-              <p>Reusable workflows and how-to procedures. Extracted from session episodes by the Auto-Constructor. Each procedure has: name, steps, tags, domain. Triggered when task type matches.</p>
+              <strong>Layer 3: Procedural</strong>
+              <p><em>Auto-promoted from L2:</em> memories recalled ≥ 8 times with importance ≥ 0.6 become workflows/procedures.</p>
             </div>
           </div>
           <div className="flow-arrow">↓</div>
           <div className="flow-step">
             <div className="flow-num">4</div>
             <div className="flow-body">
-              <strong>Episodic Memory</strong>
-              <p>Timestamped session summaries, key events, and decisions. Each episode tracks: what was done, outcome, tags. The Auto-Constructor scans these hourly to build Layer 3 procedures.</p>
+              <strong>Layer 4: Episodic</strong>
+              <p><em>Auto-promoted from L3:</em> memories recalled ≥ 15 times with importance ≥ 0.75 become session patterns.</p>
             </div>
           </div>
           <div className="flow-arrow">↓</div>
           <div className="flow-step">
             <div className="flow-num">5</div>
             <div className="flow-body">
-              <strong>Reflective Memory</strong>
-              <p>Self-improvement insights. Pattern recognition, corrections, lessons learned. Each reflection has: topic, insight, action. Feeds back into Layer 2 as durable facts.</p>
+              <strong>Layer 5: Reflective</strong>
+              <p><em>Auto-promoted from L4:</em> memories recalled ≥ 25 times with importance ≥ 0.85 become hardened insights.</p>
             </div>
           </div>
         </div>
 
-        <h3>🔄 Auto-Constructor</h3>
+        <h3>⚙️ Automation Pipeline (no cron)</h3>
         <div className="how-section">
-          <p>Runs every 60 minutes. Scans Layer 4 episodes and extracts reusable procedures into Layer 3.</p>
           <div className="how-steps">
-            <div className="how-step"><span>1</span> Fetch all episodes + existing procedures</div>
-            <div className="how-step"><span>2</span> Semantic dedup check (skip if similar procedure exists with score &gt; 0.75)</div>
-            <div className="how-step"><span>3</span> Assess if episode has actionable steps (root cause, fix, commands)</div>
-            <div className="how-step"><span>4</span> Extract procedure → store in Layer 3</div>
-            <div className="how-step"><span>5</span> Track processed episodes (avoids re-processing)</div>
+            <div className="how-step"><span>1</span> <strong>Dedup-on-write:</strong> Before every store, semantic check at 0.85. Duplicate = merge importance, return existing ID. No cruft.</div>
+            <div className="how-step"><span>2</span> <strong>Auto-consolidation:</strong> Daemon thread every 30 min. Decays memories {">"}30 days old (reduces importance by age). Purges entries below 0.05.</div>
+            <div className="how-step"><span>3</span> <strong>Layer promotion:</strong> In the same consolidation tick, frequently-recalled memories graduate: L2→L3 (8 recalls), L3→L4 (15), L4→L5 (25).</div>
+            <div className="how-step"><span>4</span> <strong>L1 persistence:</strong> Hot cache saves to l1_hot_cache.json on shutdown, reloads on startup. Self-pruning at 30 items.</div>
+            <div className="how-step"><span>5</span> <strong>Unified recall:</strong> One POST /recall searches all 5 layers. Ranked by combined_score = semantic × 0.6 + importance × 0.4.</div>
           </div>
         </div>
 
         <h3>📊 Metrics</h3>
         <div className="how-section">
-          <p>Every recall query auto-logs to the metrics system. Tracked on the Overview tab:</p>
-          <div className="how-metrics-grid">
-            <div><strong>Hit Rate</strong><span>% of queries returning results</span></div>
-            <div><strong>Avg Score</strong><span>Mean relevance score</span></div>
-            <div><strong>Median Score</strong><span>Midpoint relevance</span></div>
-            <div><strong>Score Range</strong><span>Min – Max spread</span></div>
-            <div><strong>Categories</strong><span>Which memory types are being hit</span></div>
-            <div><strong>Query Log</strong><span>Recent queries with hit counts</span></div>
-          </div>
-          <p className="muted" style={{marginTop: 'calc(8px * var(--font-scale))'}}>Optimal min_score = 0.65 for all-MiniLM-L6-v2 (determined via 8-query threshold sweep — 100% precision/recall).</p>
+          <p>Every recall query auto-logs to the metrics system on the Overview tab: hit rate, avg score, median, range, categories, and a recent query log.</p>
         </div>
 
         <h3>💾 Storage</h3>
@@ -475,32 +466,27 @@ function HowPanel() {
             <thead><tr><th>Component</th><th>Tech</th><th>Details</th></tr></thead>
             <tbody>
               <tr><td>Vector DB</td><td>ChromaDB</td><td>Embedded, no server. all-MiniLM-L6-v2, 384-dim</td></tr>
-              <tr><td>Server</td><td>Python stdlib</td><td>http.server, zero framework deps</td></tr>
-              <tr><td>Dashboard</td><td>React + Vite + TS</td><td>Mobile-first, font-scale toggle</td></tr>
-              <tr><td>Embeddings</td><td>Sentence Transformers</td><td>~120MB model, loaded once at startup</td></tr>
-              <tr><td>Persistence</td><td>Filesystem</td><td>ENGRAM_DATA_DIR (default: ~/.hermes/engram_data/)</td></tr>
+              <tr><td>Server</td><td>Python stdlib</td><td>http.server, zero deps</td></tr>
+              <tr><td>Dashboard</td><td>React + Vite + TS</td><td>Mobile-first, font-toggle</td></tr>
+              <tr><td>Persistence</td><td>Filesystem</td><td>ENGRAM_DATA_DIR (F:\hermes\.hermes\engram_data)</td></tr>
             </tbody>
           </table>
         </div>
 
         <h3>🔌 API</h3>
         <div className="how-section">
-          <p>All endpoints at <code>http://host:8092/</code>. JSON request/response.</p>
           <table className="how-table">
             <thead><tr><th>Method</th><th>Path</th><th>Layer</th><th>Description</th></tr></thead>
             <tbody>
-              <tr><td>GET</td><td>/health</td><td>1</td><td>Server status + memory count</td></tr>
-              <tr><td>GET</td><td>/stats</td><td>1</td><td>Memory stats by category</td></tr>
-              <tr><td>GET</td><td>/metrics</td><td>—</td><td>Query performance: hit rate, scores, log</td></tr>
-              <tr><td>POST</td><td>/remember</td><td>2</td><td>Store a memory</td></tr>
-              <tr><td>POST</td><td>/recall</td><td>2</td><td>Semantic search with scores</td></tr>
-              <tr><td>POST</td><td>/forget</td><td>2</td><td>Delete a memory</td></tr>
-              <tr><td>POST</td><td>/skills/search</td><td>3</td><td>Semantic skill search</td></tr>
-              <tr><td>POST</td><td>/skills/list</td><td>3</td><td>List indexed skills</td></tr>
+              <tr><td>GET</td><td>/health</td><td>-</td><td>Alive check</td></tr>
+              <tr><td>GET</td><td>/stats</td><td>-</td><td>Layer counts + consolidation status</td></tr>
+              <tr><td>POST</td><td>/remember</td><td>2</td><td>Store (dedup auto-applied)</td></tr>
+              <tr><td>POST</td><td>/recall</td><td>1-5</td><td>Unified search: hot_cache + unified ranked + per-layer buckets</td></tr>
+              <tr><td>POST</td><td>/consolidate</td><td>-</td><td>Manual consolidation tick</td></tr>
+              <tr><td>POST</td><td>/skills/search</td><td>3</td><td>Find skills</td></tr>
               <tr><td>POST</td><td>/procedures/*</td><td>3</td><td>Store/search/list procedures</td></tr>
               <tr><td>POST</td><td>/episodes/*</td><td>4</td><td>Store/search/list episodes</td></tr>
-              <tr><td>POST</td><td>/reflect</td><td>5</td><td>Store a reflection</td></tr>
-              <tr><td>POST</td><td>/reflections/*</td><td>5</td><td>Search/list reflections</td></tr>
+              <tr><td>POST</td><td>/reflect|reflections/*</td><td>5</td><td>Store/search/list reflections</td></tr>
             </tbody>
           </table>
         </div>
@@ -508,4 +494,3 @@ function HowPanel() {
     </div>
   );
 }
-

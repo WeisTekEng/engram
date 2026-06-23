@@ -215,6 +215,32 @@ class SemanticIndex:
                     categories.add(meta["category"])
         return sorted(categories)
 
+    def update_importance(self, memory_id: str, new_importance: float) -> bool:
+        """Update the importance of an existing memory. Returns True on success."""
+        try:
+            results = self.collection.get(ids=[memory_id], include=["metadatas"])
+            if not results or not results["ids"]:
+                return False
+            meta = dict(results["metadatas"][0]) if results["metadatas"] else {}
+            meta["importance"] = new_importance
+            self.collection.update(ids=[memory_id], metadatas=[meta])
+            return True
+        except Exception:
+            return False
+
+    def increment_access_count(self, memory_id: str) -> None:
+        """Increment the access count for a memory. Tracks recall frequency."""
+        try:
+            results = self.collection.get(ids=[memory_id], include=["metadatas"])
+            if not results or not results["ids"]:
+                return
+            meta = dict(results["metadatas"][0]) if results["metadatas"] else {}
+            count = int(meta.get("access_count", 0))
+            meta["access_count"] = count + 1
+            self.collection.update(ids=[memory_id], metadatas=[meta])
+        except Exception:
+            pass
+
     def close(self) -> None:
         """Close the ChromaDB client, releasing file locks."""
         try:

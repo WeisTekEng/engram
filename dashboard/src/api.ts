@@ -95,6 +95,11 @@ export async function recallLayer1(): Promise<string[]> {
   return data.hot_cache || [];
 }
 
+export async function fetchHotCache(): Promise<{ items: string[]; total: number }> {
+  const res = await fetch(`${BASE}/hot-cache`);
+  return res.json();
+}
+
 // ── Metrics ──
 
 interface MetricsData {

@@ -4,6 +4,7 @@ Exposes REST API for memory operations and serves the dashboard.
 """
 
 import json
+import os
 import threading
 import time
 from collections import defaultdict
@@ -103,6 +104,7 @@ class _Handler(BaseHTTPRequestHandler):
 
         if path == "/health":
             stats = self.engram.stats()
+            uptime = int(time.time() - self.server._start_time)
             self._json({
                 "status": "ok",
                 "layers": {
@@ -110,7 +112,15 @@ class _Handler(BaseHTTPRequestHandler):
                     "2": "semantic_index",
                 },
                 "total_memories": stats["semantic_index"]["total_memories"],
-                "uptime_seconds": 0,  # placeholder
+                "uptime_seconds": uptime,
+            })
+
+        elif path == "/hot-cache":
+            # Return raw L1 hot cache items (no query filter)
+            items = list(self.engram._hot_cache)
+            self._json({
+                "items": items[-15:],  # last 15 (matches _HOT_CACHE_RETURN)
+                "total": len(items),
             })
 
         elif path.startswith("/assets/"):
@@ -194,22 +204,26 @@ class _Handler(BaseHTTPRequestHandler):
                 limit=data.get("limit", 10),
                 min_score=data.get("min_score", 0.5),
             )
-            hits = result.semantic_hits
-            # Auto-log metrics
+            # Auto-log metrics from unified results
+            unified = result.unified
             self._log_query(
                 query=data.get("query", ""),
-                count=len(hits),
-                top_score=hits[0].score if hits else 0,
-                categories=[h.memory.category for h in hits],
+                count=len(unified),
+                top_score=unified[0]["score"] if unified else 0,
+                categories=[u.get("category","") for u in unified[:5]],
             )
             self._json({
                 "query": data.get("query", ""),
-                "count": len(hits),
+                "count": len(unified),
                 "hot_cache": result.hot_cache,
                 "semantic_hits": [
                     {"content": h.memory.content, "score": h.score, "category": h.memory.category}
-                    for h in hits
+                    for h in result.semantic_hits
                 ],
+                "procedural": result.procedural_matches,
+                "episodic": result.episodic_matches,
+                "reflections": result.reflection_matches,
+                "unified": unified[:data.get("limit", 10)],
             })
 
         elif path == "/forget":
@@ -491,6 +505,10 @@ class _Handler(BaseHTTPRequestHandler):
             )
             self._json({"status": "logged"})
 
+        elif path == "/consolidate":
+            result = self.engram.trigger_consolidation()
+            self._json(result)
+
         else:
             self._json({"error": "not found"}, status=404)
 
@@ -536,6 +554,10 @@ class EngramServer:
 
     def start(self):
         """Start the HTTP server. Blocks until stop() is called."""
+        # Track startup time for /health uptime reporting
+        self._start_time = time.time()
+        HTTPServer._start_time = self._start_time  # per-instance, accessible from handler
+
         # Configure handler class
         _Handler.engram = self._engram
         _Handler.dashboard_html = self.dashboard_html
@@ -627,6 +649,7 @@ h1 { font-size: calc(24px * var(--font-scale)); margin-bottom: calc(16px * var(-
   <button class="tab" onclick="showTab('layer2')">Layer 2: Semantic</button>
   <button class="tab" onclick="showTab('layer3')">Layer 3-5</button>
   <button class="tab" onclick="showTab('search')">🔍 Search</button>
+  <button class="tab" onclick="showTab('how')">❓ How</button>
 </div>
 
 <div id="overview" class="panel active">
@@ -655,14 +678,61 @@ h1 { font-size: calc(24px * var(--font-scale)); margin-bottom: calc(16px * var(-
   </div>
 </div>
 
-<div id="layer3" class="panel">
+<div id="how" class="panel">
   <div class="card">
-    <h2>Layers 3-5: Coming Soon</h2>
-    <p style="color:var(--muted)">
-      Layer 3: Procedural (workflows) — planned<br>
-      Layer 4: Episodic (transcripts) — planned<br>
-      Layer 5: Meta/Reflective (self-improving) — planned
-    </p>
+    <h2>🧠 How Engram Works</h2>
+    <div style="font-size:calc(13px*var(--font-scale));line-height:1.7;color:var(--text)">
+
+      <h3>5 Layers — Automated Pipeline</h3>
+      <p>Engram is a self-contained memory system with NO external cron jobs. Everything runs inside the process.</p>
+
+      <div style="margin:12px 0;padding:10px;background:rgba(88,166,255,0.08);border-left:3px solid var(--accent);border-radius:4px">
+        <strong>Layer 1: Hot Cache</strong> (in-memory, persisted to disk)<br>
+        <span style="color:var(--muted)">Auto-populated from every write and every recall top-hit. Last 30 items kept, last 15 returned.</span>
+      </div>
+
+      <div style="margin:12px 0;padding:10px;background:rgba(88,166,255,0.08);border-left:3px solid var(--accent);border-radius:4px">
+        <strong>Layer 2: Semantic Index</strong> (ChromaDB)<br>
+        <span style="color:var(--muted)">All new memories land here. Queried by embedding similarity (all-MiniLM-L6-v2, cosine distance). Dedup merges at score ≥ 0.85.</span>
+      </div>
+
+      <div style="margin:12px 0;padding:10px;background:rgba(108,92,231,0.08);border-left:3px solid #6c5ce7;border-radius:4px">
+        <strong>Layer 3: Procedural</strong> (promoted from L2)<br>
+        <span style="color:var(--muted)">Memories recalled ≥8 times with importance ≥0.6 auto-promote here. They're workflows and reusable patterns.</span>
+      </div>
+
+      <div style="margin:12px 0;padding:10px;background:rgba(0,230,118,0.08);border-left:3px solid var(--success);border-radius:4px">
+        <strong>Layer 4: Episodic</strong> (promoted from L3)<br>
+        <span style="color:var(--muted)">Memories recalled ≥15 times with importance ≥0.75 promote here. They represent recurring session patterns.</span>
+      </div>
+
+      <div style="margin:12px 0;padding:10px;background:rgba(210,153,29,0.08);border-left:3px solid var(--orange);border-radius:4px">
+        <strong>Layer 5: Reflection</strong> (promoted from L4)<br>
+        <span style="color:var(--muted)">Memories recalled ≥25 times with importance ≥0.85 promote here. These are hardened insights — the most valuable persistent knowledge.</span>
+      </div>
+
+      <h3>Automation (no cron)</h3>
+      <ul style="color:var(--muted);font-size:calc(12px*var(--font-scale))">
+        <li><strong>Dedup-on-write:</strong> semantic merge at 0.85 — same content returns existing ID, importance boosted</li>
+        <li><strong>Auto-consolidation:</strong> daemon thread every 30 min — decays memories >30 days old, purges below 0.05 importance</li>
+        <li><strong>Layer promotion:</strong> frequently recalled memories auto-graduate L2→L3→L4→L5 based on access count + importance</li>
+        <li><strong>L1 persistence:</strong> hot cache saves to disk on shutdown, reloads on startup</li>
+        <li><strong>Unified recall:</strong> one API call searches all 5 layers, ranked by combined_score = semantic×0.6 + importance×0.4</li>
+      </ul>
+
+      <h3>API Endpoints</h3>
+      <div style="font-size:calc(11px*var(--font-scale));background:var(--bg);padding:8px;border-radius:4px">
+        POST /remember — store (cat, importance, layer)<br>
+        POST /recall — search all layers (query, limit, min_score)<br>
+        POST /consolidate — manual trigger<br>
+        GET /stats — layer counts + consolidation status<br>
+        GET /health — alive check<br>
+        POST /skills/search — find relevant skills<br>
+        POST /procedures/remember — store workflow<br>
+        POST /episodes/remember — store session<br>
+        POST /reflect — store insight
+      </div>
+    </div>
   </div>
 
 <div id="search" class="panel">
@@ -682,7 +752,8 @@ h1 { font-size: calc(24px * var(--font-scale)); margin-bottom: calc(16px * var(-
 function showTab(name) {
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
   document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
-  document.querySelector(`.tab:nth-child(${{'overview':1,'layer1':2,'layer2':3,'layer3':4,'search':5}[name]})`).classList.add('active');
+  const idx = {{'overview':1,'layer1':2,'layer2':3,'how':4,'search':5}[name] || 4};
+  document.querySelector(`.tab:nth-child(${idx})`).classList.add('active');
   document.getElementById(name).classList.add('active');
   if (name === 'layer1') refreshLayer1();
   if (name === 'layer2') refreshLayer2();
