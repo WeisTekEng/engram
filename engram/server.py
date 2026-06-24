@@ -29,6 +29,7 @@ class _Handler(BaseHTTPRequestHandler):
     # Metrics tracking: query log + aggregate stats
     _metrics_lock = threading.Lock()
     _metrics_queries: list = []  # list of {ts, query, count, top_score, categories}
+    _metrics_remembers: list = []  # list of {ts, merged}
     _metrics_max_queries = 500   # rolling window
 
     @classmethod
@@ -48,11 +49,23 @@ class _Handler(BaseHTTPRequestHandler):
     def _get_metrics(cls) -> dict:
         with cls._metrics_lock:
             qs = list(cls._metrics_queries)
+            rs = list(cls._metrics_remembers)
+
+        # Remember metrics always available
+        rem_total = len(rs)
+        rem_merged = sum(1 for r in rs if r["merged"])
+        remember = {
+            "remember_total": rem_total,
+            "remember_merged": rem_merged,
+            "merge_rate": round(rem_merged / rem_total, 3) if rem_total else 0,
+        }
+
         if not qs:
             return {
                 "total_queries": 0, "hit_rate": 0, "hits": 0, "misses": 0,
                 "avg_score": 0, "min_score": 0, "max_score": 0, "median_score": 0,
                 "category_distribution": {}, "recent_queries": [],
+                **remember,
             }
 
         total = len(qs)
@@ -81,7 +94,41 @@ class _Handler(BaseHTTPRequestHandler):
             "median_score": round(scores[len(scores)//2], 3),
             "category_distribution": dict(cat_counts),
             "recent_queries": list(reversed(recent)),
+            **remember,
         }
+
+    @classmethod
+    def _log_remember(cls, merged: bool):
+        """Track /remember outcomes for merge-rate metrics."""
+        with cls._metrics_lock:
+            cls._metrics_remembers.append({
+                "ts": time.time(),
+                "merged": merged,
+            })
+            if len(cls._metrics_remembers) > cls._metrics_max_queries:
+                cls._metrics_remembers = cls._metrics_remembers[-cls._metrics_max_queries:]
+
+    @classmethod
+    def _get_remember_metrics(cls) -> dict:
+        with cls._metrics_lock:
+            rs = list(cls._metrics_remembers)
+        total = len(rs)
+        merged = sum(1 for r in rs if r["merged"])
+        return {
+            "remember_total": total,
+            "remember_merged": merged,
+            "merge_rate": round(merged / total, 3) if total else 0,
+        }
+
+    def _count_sessions(self) -> int:
+        """Count L4 episodic sessions using list_by_category (substring-aware)."""
+        items = self.engram._semantic.list_by_category("L4_", limit=1000)
+        seen = set()
+        for item in items:
+            sid = (item.get("metadata", {}) or {}).get("session_id", "")
+            if sid:
+                seen.add(sid)
+        return len(seen)
 
     def log_message(self, format, *args):
         """Suppress default logging to stderr."""
@@ -358,6 +405,8 @@ class _Handler(BaseHTTPRequestHandler):
                 importance=data.get("importance", 0.5),
                 metadata=data.get("metadata"),
             )
+            # Track merge behavior for /metrics
+            self._log_remember(merged=info["merged"])
             resp = {"memory_id": info["memory_id"], "merged": info["merged"]}
             if info["merged"]:
                 resp["status"] = "merged"
@@ -507,6 +556,7 @@ class _Handler(BaseHTTPRequestHandler):
         elif path == "/sessions/complete":
             # Called after a Hermes session ends to auto-store an episodic summary.
             # Auto-promotes key decisions and outcomes into L4 episodic memory.
+            # Idempotent: if session_id is provided and already exists, returns existing record.
             data = self._read_json()
             summary = data.get("summary", "")
             decisions = data.get("decisions", [])
@@ -518,6 +568,20 @@ class _Handler(BaseHTTPRequestHandler):
             if not summary:
                 self._json({"status": "error", "message": "summary required"})
                 return
+
+            # Check for existing session_id (idempotency gate)
+            if session_id:
+                existing = self.engram._semantic.list_by_category("L4_", limit=500)
+                for item in existing:
+                    meta = item.get("metadata", {}) or {}
+                    if meta.get("session_id") == session_id:
+                        self._json({
+                            "status": "already_recorded",
+                            "memory_id": item["id"],
+                            "layer": 4,
+                            "total_sessions": self._count_sessions(),
+                        })
+                        return
 
             # Build structured episodic content
             parts = [f"Session: {session_id}", f"Outcome: {outcome}"]
@@ -544,15 +608,12 @@ class _Handler(BaseHTTPRequestHandler):
                     "source": "hermes-session-auto-feed",
                 },
             )
-            total_sessions = len(self.engram._semantic.recall(
-                query="session", category_filter="L4_episodic_session", limit=200, min_score=0
-            )) if hasattr(self.engram._semantic, 'recall') else 1
 
             self._json({
                 "status": "stored",
                 "memory_id": memory_id,
                 "layer": 4,
-                "total_sessions": total_sessions,
+                "total_sessions": self._count_sessions(),
             })
 
         # ── Layer 3: Procedural Memory (workflows) ──
