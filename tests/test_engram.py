@@ -668,3 +668,57 @@ class TestDecayAndPurge:
                 f"Should purge: before={count_before}, after={count_after}"
             )
 
+
+class TestRememberCollapsed:
+    """Phase 8.1: remember() is a thin wrapper around remember_with_info()."""
+
+    def test_remember_dedup_increments_counter(self):
+        """Calling remember() on near-duplicate content increments _dedup_merged_count."""
+        from engram import Engram
+        import tempfile
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
+            engram = Engram(persist_dir=tmpdir, auto_bootstrap=False)
+
+            # First store
+            id1 = engram.remember("Jeremy prefers dark mode on all dashboards")
+            assert engram._dedup_merged_count == 0
+
+            # Same content again — should merge via remember(), which delegates to remember_with_info()
+            id2 = engram.remember("Jeremy prefers dark mode on all dashboards")
+            assert engram._dedup_merged_count == 1, (
+                f"remember() should increment dedup counter via remember_with_info(). "
+                f"Got {engram._dedup_merged_count}"
+            )
+            # Both return the same memory_id
+            assert id1 == id2
+
+    def test_remember_matches_remember_with_info(self):
+        """remember()'s return must match remember_with_info()['memory_id'] for
+        both new-stored and merged-duplicate cases."""
+        from engram import Engram
+        import tempfile
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
+            engram = Engram(persist_dir=tmpdir, auto_bootstrap=False)
+
+            # Case 1: new memory — call remember_with_info first, then remember
+            rwi = engram.remember_with_info("Unique fact A", category="test")
+            assert rwi["merged"] is False
+
+            rid = engram.remember("Unique fact A", category="test")
+            # remember() delegates to remember_with_info which finds the duplicate
+            assert rid == rwi["memory_id"], (
+                f"remember() should return same ID after merge: {rid} vs {rwi['memory_id']}"
+            )
+
+            # Case 2: truly new content — both methods produce same ID
+            rid2 = engram.remember("Unique fact B", category="test")
+            rwi2 = engram.remember_with_info("Unique fact B", category="test")
+            assert rid2 == rwi2["memory_id"], (
+                f"Both should return same ID for duplicate: {rid2} vs {rwi2['memory_id']}"
+            )
+            assert rwi2["merged"] is True, (
+                "Second store of same content should be a merge"
+            )
+

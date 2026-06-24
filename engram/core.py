@@ -211,34 +211,11 @@ class Engram:
     ) -> str:
         """Store a memory with automatic dedup and L1 warmup.
 
-        If semantically similar content exists (score >= {_DEDUP_THRESHOLD}),
-        the existing entry's importance is boosted and the new store is
-        skipped — no duplicate created.
-
         Returns the memory_id string for backward compatibility.
         Use remember_with_info() to get merge/dedup metadata.
         """
-        # Always push to L1
-        self._push_hot(content)
-
-        # Dedup check: if similar content exists, merge importance instead
-        dup = self._find_duplicate(content)
-        if dup:
-            existing = dup.memory
-            new_importance = max(existing.importance, importance)
-            new_importance = min(1.0, new_importance + 0.05)  # small boost
-            self._semantic.update_importance(existing.id, new_importance)
-            return existing.id  # return the existing ID
-
-        if layer == 1:
-            return "hot_cache"
-        elif layer == 2:
-            return self._semantic.remember(content, category, importance, metadata)
-        else:
-            return self._semantic.remember(
-                content, category=f"L{layer}_{category}", importance=importance,
-                metadata=metadata
-            )
+        info = self.remember_with_info(content, layer, category, importance, metadata)
+        return info["memory_id"]
 
     def remember_with_info(
         self,
