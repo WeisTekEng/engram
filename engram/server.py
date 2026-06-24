@@ -4,6 +4,7 @@ Exposes REST API for memory operations and serves the dashboard.
 """
 
 import json
+import logging
 import os
 import threading
 import time
@@ -13,6 +14,8 @@ from urllib.parse import urlparse
 from typing import Optional
 
 from .core import Engram
+
+logger = logging.getLogger(__name__)
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -109,7 +112,7 @@ class _Handler(BaseHTTPRequestHandler):
 
         if path == "/health":
             stats = self.engram.stats()
-            uptime = int(time.time() - self.server._start_time)
+            uptime = int(time.time() - type(self)._start_time)
             layers_data = stats["layers"]
             self._json({
                 "status": "ok",
@@ -274,7 +277,7 @@ class _Handler(BaseHTTPRequestHandler):
                 query=data.get("query", ""),
                 layers=data.get("layers"),
                 limit=data.get("limit", 10),
-                min_score=data.get("min_score", 0.5),
+                min_score=data.get("min_score", 0.3),
             )
             # Auto-log metrics from unified results
             unified = result.unified
@@ -313,14 +316,14 @@ class _Handler(BaseHTTPRequestHandler):
                 limit=data.get("limit", 5),
                 min_score=data.get("min_score", 0.2),
             )
-            # Filter to only skill-category memories (categories may be "skill", "procedural_skill", "episodic_skill", etc. after consolidation)
+            # Filter to only skill-category memories from ALL layers (unified crosses L2-L5)
             skill_hits = [
-                {"name": h.memory.metadata.get("skill_name", "") if h.memory.metadata else "",
-                 "description": h.memory.content,
-                 "score": h.score,
-                 "category": h.memory.metadata.get("skill_category", "") if h.memory.metadata else ""}
-                for h in result.semantic_hits
-                if "skill" in (h.memory.category or "")
+                {"name": item.get("metadata", {}).get("skill_name", ""),
+                 "description": item["content"],
+                 "score": item["score"],
+                 "category": item.get("metadata", {}).get("skill_category", "")}
+                for item in result.unified
+                if "skill" in (item.get("category", "") or "")
             ]
             self._json({
                 "query": data.get("query", ""),
@@ -333,9 +336,10 @@ class _Handler(BaseHTTPRequestHandler):
             import os as _os4
             import hashlib as _hl
             skills_dir = _os4.path.join(_os4.path.dirname(_os4.path.abspath(__file__)), "..", "..", ".hermes", "skills")
-            # Try F: drive path if relative path doesn't exist (same dir, avoid double-scan)
-            if not _os4.path.isdir(skills_dir):
-                skills_dir = "F:/hermes/.hermes/skills"
+            # Respect ENGRAM_SKILLS_DIR env var if set (portability — no hardcoded paths)
+            env_skills = _os4.environ.get("ENGRAM_SKILLS_DIR", "")
+            if env_skills and _os4.path.isdir(env_skills):
+                skills_dir = env_skills
             indexed = 0
             skipped_dupes = 0
             content_hashes = set()
@@ -699,9 +703,9 @@ class EngramServer:
 
     def start(self):
         """Start the HTTP server. Blocks until stop() is called."""
-        # Track startup time for /health uptime reporting
+        # Track startup time for /health uptime reporting (on handler class, not HTTPServer)
         self._start_time = time.time()
-        HTTPServer._start_time = self._start_time  # per-instance, accessible from handler
+        _Handler._start_time = self._start_time
 
         # Configure handler class
         _Handler.engram = self._engram
@@ -843,17 +847,17 @@ h1 { font-size: calc(24px * var(--font-scale)); margin-bottom: calc(16px * var(-
 
       <div style="margin:12px 0;padding:10px;background:rgba(108,92,231,0.08);border-left:3px solid #6c5ce7;border-radius:4px">
         <strong>Layer 3: Procedural</strong> (promoted from L2)<br>
-        <span style="color:var(--muted)">Memories recalled ≥8 times with importance ≥0.6 auto-promote here. They're workflows and reusable patterns.</span>
+        <span style="color:var(--muted)">Memories recalled ≥2 times with importance ≥0.40 auto-promote here. They're workflows and reusable patterns.</span>
       </div>
 
       <div style="margin:12px 0;padding:10px;background:rgba(0,230,118,0.08);border-left:3px solid var(--success);border-radius:4px">
         <strong>Layer 4: Episodic</strong> (promoted from L3)<br>
-        <span style="color:var(--muted)">Memories recalled ≥15 times with importance ≥0.75 promote here. They represent recurring session patterns.</span>
+        <span style="color:var(--muted)">Memories recalled ≥4 times with importance ≥0.55 promote here. They represent recurring session patterns.</span>
       </div>
 
       <div style="margin:12px 0;padding:10px;background:rgba(210,153,29,0.08);border-left:3px solid var(--orange);border-radius:4px">
         <strong>Layer 5: Reflection</strong> (promoted from L4)<br>
-        <span style="color:var(--muted)">Memories recalled ≥25 times with importance ≥0.85 promote here. These are hardened insights — the most valuable persistent knowledge.</span>
+        <span style="color:var(--muted)">Memories recalled ≥8 times with importance ≥0.70 promote here. These are hardened insights — the most valuable persistent knowledge.</span>
       </div>
 
       <h3>Automation (no cron)</h3>

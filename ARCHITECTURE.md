@@ -70,9 +70,9 @@ On every turn:
 ### Consolidation Thresholds
 | Promotion | Min Recalls | Min Importance |
 |-----------|-------------|----------------|
-| L2 → L3 (Procedural) | 4 | 0.55 |
-| L3 → L4 (Episodic) | 8 | 0.70 |
-| L4 → L5 (Reflective) | 12 | 0.80 |
+| L2 → L3 (Procedural) | 2 | 0.40 |
+| L3 → L4 (Episodic) | 4 | 0.55 |
+| L4 → L5 (Reflective) | 8 | 0.70 |
 
 ## Category Prefix Convention
 

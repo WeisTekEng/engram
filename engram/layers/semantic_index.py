@@ -229,15 +229,24 @@ class SemanticIndex:
             return False
 
     def increment_access_count(self, memory_id: str) -> None:
-        """Increment the access count for a memory. Tracks recall frequency."""
+        """Increment the access count for a single memory. Prefer batch_increment_access_count for bulk operations."""
+        self.batch_increment_access_count([memory_id])
+
+    def batch_increment_access_count(self, memory_ids: list) -> None:
+        """Batch increment access counts — single get + single update for all IDs."""
+        if not memory_ids:
+            return
         try:
-            results = self.collection.get(ids=[memory_id], include=["metadatas"])
+            results = self.collection.get(ids=list(memory_ids), include=["metadatas"])
             if not results or not results["ids"]:
                 return
-            meta = dict(results["metadatas"][0]) if results["metadatas"] else {}
-            count = int(meta.get("access_count", 0))
-            meta["access_count"] = count + 1
-            self.collection.update(ids=[memory_id], metadatas=[meta])
+            new_metadatas = []
+            for meta in (results["metadatas"] or []):
+                m = dict(meta) if meta else {}
+                count = int(m.get("access_count", 0))
+                m["access_count"] = count + 1
+                new_metadatas.append(m)
+            self.collection.update(ids=results["ids"], metadatas=new_metadatas)
         except Exception:
             pass
 

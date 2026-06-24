@@ -32,6 +32,7 @@ class EmbeddingModel:
         self.provider = provider
         self.openai_api_key = openai_api_key
         self._model = None
+        self._dimensions_cache: Optional[int] = None
 
     @property
     def model(self):
@@ -85,5 +86,7 @@ class EmbeddingModel:
 
     @property
     def dimensions(self) -> int:
-        """Get embedding dimensions (triggers model load if needed)."""
-        return self.embed_single("test").dimensions
+        """Get embedding dimensions (cached after first access)."""
+        if self._dimensions_cache is None:
+            self._dimensions_cache = self.embed_single("test").dimensions
+        return self._dimensions_cache

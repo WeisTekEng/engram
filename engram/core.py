@@ -30,6 +30,15 @@ _DECAY_DAYS = 30             # after N days without access, start decaying
 _MIN_IMPORTANCE = 0.05       # floor before auto-purge
 _L1_PERSIST_FILE = "l1_hot_cache.json"
 
+# Layer promotion thresholds (canonical — the single source of truth)
+_L3_MIN_RECALLS = 2          # L2→L3: procedural
+_L3_MIN_IMPORTANCE = 0.40
+_L4_MIN_RECALLS = 4          # L3→L4: episodic
+_L4_MIN_IMPORTANCE = 0.55
+_L5_MIN_RECALLS = 8          # L4→L5: reflection
+_L5_MIN_IMPORTANCE = 0.70
+_HIGH_IMPORTANCE_BOOST = 0.8 # free promotion to L3 at this importance
+
 
 @dataclass
 class RecallResult:
@@ -271,6 +280,8 @@ class Engram:
                         "layer": "procedural",
                         "category": cat[3:],
                         "importance": hit.memory.importance,
+                        "memory_id": hit.memory.id,
+                        "metadata": hit.memory.metadata or {},
                     })
                 elif cat.startswith("L4_"):
                     getattr(result, _CAT_BUCKETS["L4_"]).append(hit.memory.content)
@@ -280,6 +291,8 @@ class Engram:
                         "layer": "episodic",
                         "category": cat[3:],
                         "importance": hit.memory.importance,
+                        "memory_id": hit.memory.id,
+                        "metadata": hit.memory.metadata or {},
                     })
                 elif cat.startswith("L5_"):
                     getattr(result, _CAT_BUCKETS["L5_"]).append(hit.memory.content)
@@ -289,6 +302,8 @@ class Engram:
                         "layer": "reflection",
                         "category": cat[3:],
                         "importance": hit.memory.importance,
+                        "memory_id": hit.memory.id,
+                        "metadata": hit.memory.metadata or {},
                     })
                 else:
                     # Layer 2 (no prefix)
@@ -299,6 +314,8 @@ class Engram:
                         "layer": "memory (" + cat + ")",
                         "category": cat,
                         "importance": hit.memory.importance,
+                        "memory_id": hit.memory.id,
+                        "metadata": hit.memory.metadata or {},
                     })
 
             # Sort unified by combined score: semantic_score * 0.6 + importance * 0.4
@@ -309,9 +326,9 @@ class Engram:
             result.unified.sort(key=lambda x: x["combined_score"], reverse=True)
             result.unified = result.unified[:limit]
 
-            # Track access count for every hit (promotion signal)
-            for hit in all_hits:
-                self._semantic.increment_access_count(hit.memory.id)
+            # Track access count for all hits in one batch (O(2) I/O instead of O(2N))
+            if all_hits:
+                self._semantic.batch_increment_access_count([h.memory.id for h in all_hits])
 
             # Warm L1 with the top hit
             if all_hits:
@@ -345,31 +362,25 @@ class Engram:
                 pass  # never let the loop die
 
     def _promote_memory(self, mem_id: str, meta: dict, importance: float, access_count: int) -> None:
-        """Promote a memory to higher layers based on frequency and importance.
-
-        Thresholds lowered for practical activation:
-        L3: 2+ recalls + 0.40 importance
-        L4: 4+ recalls + 0.55 importance
-        L5: 8+ recalls + 0.70 importance
-        High-importance memories (>= 0.8) get a free promotion to L3."""
+        """Promote a memory to higher layers based on frequency and importance."""
         cat = meta.get("category", "general")
         # Don't re-promote already-promoted memories
         if cat.startswith("L3_") or cat.startswith("L4_") or cat.startswith("L5_"):
             return
 
-        # High importance gate: anything >= 0.8 gets at least L3
-        if importance >= 0.8 and access_count < 2:
-            access_count = 2  # boost to L3 threshold
+        # High importance gate: anything >= threshold gets at least L3
+        if importance >= _HIGH_IMPORTANCE_BOOST and access_count < _L3_MIN_RECALLS:
+            access_count = _L3_MIN_RECALLS  # boost to L3 threshold
 
-        if access_count >= 8 and importance >= 0.70:
+        if access_count >= _L5_MIN_RECALLS and importance >= _L5_MIN_IMPORTANCE:
             # Promote to L5 (reflection)
             new_cat = f"L5_reflection_{cat}"
             meta["importance"] = min(1.0, importance + 0.1)
-        elif access_count >= 4 and importance >= 0.55:
+        elif access_count >= _L4_MIN_RECALLS and importance >= _L4_MIN_IMPORTANCE:
             # Promote to L4 (episodic)
             new_cat = f"L4_episodic_{cat}"
             meta["importance"] = min(1.0, importance + 0.05)
-        elif access_count >= 2 and importance >= 0.40:
+        elif access_count >= _L3_MIN_RECALLS and importance >= _L3_MIN_IMPORTANCE:
             # Promote to L3 (procedural)
             new_cat = f"L3_procedural_{cat}"
         else:
