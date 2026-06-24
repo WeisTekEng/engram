@@ -9,6 +9,7 @@ import os
 import threading
 import time
 from collections import defaultdict
+from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse
 from typing import Optional
@@ -114,8 +115,34 @@ class _Handler(BaseHTTPRequestHandler):
             stats = self.engram.stats()
             uptime = int(time.time() - type(self)._start_time)
             layers_data = stats["layers"]
+
+            # Actually probe health — don't blindly report "ok"
+            checks = {}
+            # Check 1: ChromaDB is reachable
+            try:
+                chroma_count = self.engram._semantic.collection.count()
+                checks["chromadb"] = {"status": "ok", "count": chroma_count}
+            except Exception as e:
+                checks["chromadb"] = {"status": "error", "error": str(e)[:200]}
+
+            # Check 2: Consolidation thread is alive (if enabled)
+            cons = stats.get("consolidation", {})
+            checks["consolidation"] = {
+                "enabled": cons.get("enabled", False),
+                "thread_alive": cons.get("thread_alive", False),
+            }
+
+            # Determine overall status
+            chroma_ok = checks["chromadb"]["status"] == "ok"
+            cons_ok = (
+                not checks["consolidation"]["enabled"]
+                or checks["consolidation"]["thread_alive"]
+            )
+            overall = "ok" if (chroma_ok and cons_ok) else "degraded"
+
             self._json({
-                "status": "ok",
+                "status": overall,
+                "checks": checks,
                 "layers": {
                     "1": {"name": "hot_cache", "count": layers_data.get("L1_hot", 0)},
                     "2": {"name": "semantic_index", "count": layers_data.get("L2_semantic", 0)},
@@ -124,6 +151,9 @@ class _Handler(BaseHTTPRequestHandler):
                     "5": {"name": "reflection", "count": layers_data.get("L5_reflection", 0)},
                 },
                 "total_memories": stats["semantic_index"]["total_memories"],
+                "dedup": {
+                    "merged_total": self.engram._dedup_merged_count,
+                },
                 "uptime_seconds": uptime,
             })
 
@@ -156,6 +186,34 @@ class _Handler(BaseHTTPRequestHandler):
         elif path == "/stats":
             self._json(self.engram.stats())
 
+        elif path == "/export":
+            # Export all memories as JSON (backup/round-trip)
+            all_data = self.engram._semantic.collection.get(
+                include=["metadatas", "documents"]
+            )
+            memories = []
+            if all_data and all_data["ids"]:
+                for i, mem_id in enumerate(all_data["ids"]):
+                    meta = (all_data["metadatas"] or [{}])[i] or {}
+                    memories.append({
+                        "id": mem_id,
+                        "content": (all_data["documents"] or [""])[i] or "",
+                        "category": meta.get("category", "general"),
+                        "importance": float(meta.get("importance", 0.5)),
+                        "access_count": int(meta.get("access_count", 0)),
+                        "created_at": meta.get("created_at", ""),
+                        "metadata": {
+                            k: v for k, v in meta.items()
+                            if k not in ("category", "importance", "created_at",
+                                         "access_count", "content_hash")
+                        },
+                    })
+            self._json({
+                "exported_at": datetime.now().isoformat(),
+                "total": len(memories),
+                "memories": memories,
+            })
+
         elif path == "/skills" or path == "/skills/list":
             # GET skills list (for dashboard browsing)
             import traceback as _tb2
@@ -184,40 +242,71 @@ class _Handler(BaseHTTPRequestHandler):
             self._json({"skills": skills, "count": len(skills), "error": error_msg})
 
         elif path == "/episodes/list":
-            # GET: list all episodes
-            result = self.engram.recall(
-                query="session conversation episode event",
-                layers=[4],
-                limit=200, min_score=0.0,
-            )
-            self._json({"episodes": [
-                {"content": r[:300]} for r in result.episodic_matches[:50]
-                if r
-            ], "count": len(result.episodic_matches)})
+            # GET: list all episodes (L4) — real listing, no fake query
+            items = self.engram._semantic.list_by_category("L4_", limit=100)
+            episodes = []
+            seen = set()
+            for item in items:
+                if item["content"] in seen:
+                    continue
+                seen.add(item["content"])
+                meta = item.get("metadata", {})
+                title = meta.get("title", "")
+                if not title:
+                    first_line = item["content"].split("\n")[0].strip("# ").strip()
+                    if len(first_line) > 3:
+                        title = first_line[:80]
+                    else:
+                        title = item["content"][:80].replace(" | ", " ").strip()
+                episodes.append({
+                    "title": title,
+                    "content": item["content"][:300],
+                    "timestamp": meta.get("timestamp", ""),
+                    "tags": meta.get("tags", ""),
+                    "outcome": meta.get("outcome", ""),
+                    "session_id": meta.get("session_id", ""),
+                    "score": round(item.get("importance", 0.5), 3),
+                })
+            self._json({"episodes": episodes, "count": len(episodes)})
 
         elif path == "/reflections/list":
-            # GET: list all reflections
-            result = self.engram.recall(
-                query="reflection insight improvement learn",
-                layers=[5],
-                limit=200, min_score=0.0,
-            )
-            self._json({"reflections": [
-                {"content": r[:300]} for r in result.reflection_matches[:50]
-                if r
-            ], "count": len(result.reflection_matches)})
+            # GET: list all reflections (L5) — real listing, no fake query
+            items = self.engram._semantic.list_by_category("L5_", limit=100)
+            reflections = []
+            seen = set()
+            for item in items:
+                if item["content"] in seen:
+                    continue
+                seen.add(item["content"])
+                meta = item.get("metadata", {})
+                reflections.append({
+                    "topic": meta.get("topic", ""),
+                    "content": item["content"][:200],
+                    "insight": meta.get("insight", ""),
+                    "action": meta.get("action", ""),
+                    "success": meta.get("success", ""),
+                    "score": round(item.get("importance", 0.5), 3),
+                })
+            self._json({"reflections": reflections, "count": len(reflections)})
 
         elif path == "/procedures/list":
-            # GET: list all procedures
-            result = self.engram.recall(
-                query="workflow procedure process",
-                layers=[3],
-                limit=200, min_score=0.0,
-            )
-            self._json({"procedures": [
-                {"content": r[:300]} for r in result.procedural_matches[:50]
-                if r
-            ], "count": len(result.procedural_matches)})
+            # GET: list all procedures (L3) — real listing, no fake query
+            items = self.engram._semantic.list_by_category("L3_", limit=200)
+            procedures = []
+            seen = set()
+            for item in items:
+                if item["content"] in seen:
+                    continue
+                seen.add(item["content"])
+                meta = item.get("metadata", {})
+                procedures.append({
+                    "name": meta.get("name", ""),
+                    "content": item["content"][:200],
+                    "steps": meta.get("steps", ""),
+                    "domain": meta.get("domain", ""),
+                    "score": round(item.get("importance", 0.5), 3),
+                })
+            self._json({"procedures": procedures, "count": len(procedures)})
 
         elif path == "/layers":
             stats = self.engram.stats()
@@ -262,14 +351,20 @@ class _Handler(BaseHTTPRequestHandler):
 
         if path == "/remember":
             data = self._read_json()
-            memory_id = self.engram.remember(
+            info = self.engram.remember_with_info(
                 content=data.get("content", ""),
                 layer=data.get("layer", 2),
                 category=data.get("category", "general"),
                 importance=data.get("importance", 0.5),
                 metadata=data.get("metadata"),
             )
-            self._json({"status": "stored", "memory_id": memory_id})
+            resp = {"memory_id": info["memory_id"], "merged": info["merged"]}
+            if info["merged"]:
+                resp["status"] = "merged"
+                resp["new_importance"] = info.get("new_importance", 0.5)
+            else:
+                resp["status"] = "stored"
+            self._json(resp)
 
         elif path == "/recall":
             data = self._read_json()
@@ -381,31 +476,29 @@ class _Handler(BaseHTTPRequestHandler):
             self._json({"status": "indexed", "count": indexed, "skipped_duplicates": skipped_dupes})
 
         elif path == "/skills/list" or path == "/skills/list/":
-            # List skills via semantic layer — filter in Python (ChromaDB doesn't support partial category match)
+            # Real listing via list_by_category — deterministic, no fake query
             import traceback as _tb
             skills = []
             error_msg = None
             try:
-                results = self.engram._semantic.recall(
-                    query="skills",
-                    limit=400,
-                    min_score=0.0,
-                )
+                # Skills can have any of these category prefixes after consolidation
+                prefixes = ["skill", "procedural_skill", "episodic_skill",
+                           "reflection_skill", "L3_procedural_skill",
+                           "L4_episodic_skill", "L5_reflection_skill"]
                 seen = set()
-                for r in results:
-                    # Filter to skill-category memories only (may be "skill", "procedural_skill", etc.)
-                    if "skill" not in (r.memory.category or ""):
-                        continue
-                    name = r.memory.metadata.get("skill_name", "") if r.memory.metadata else ""
-                    if name and name not in seen:
-                        seen.add(name)
-                        skills.append({
-                            "name": name,
-                            "description": r.memory.content[:200] if r.memory.content else "",
-                            "category": r.memory.metadata.get("skill_category", "") if r.memory.metadata else "",
-                            "score": round(r.score, 3),
-                        })
-                error_msg = f"raw results: {len(results)}, filtered: {len(skills)}"
+                for prefix in prefixes:
+                    items = self.engram._semantic.list_by_category(prefix, limit=500)
+                    for item in items:
+                        name = (item.get("metadata", {}) or {}).get("skill_name", "")
+                        if name and name not in seen:
+                            seen.add(name)
+                            skills.append({
+                                "name": name,
+                                "description": item["content"][:200] if item.get("content") else "",
+                                "category": (item.get("metadata", {}) or {}).get("skill_category", ""),
+                                "score": round(item.get("importance", 0.5), 3),
+                            })
+                error_msg = f"prefixes checked: {len(prefixes)}, found: {len(skills)}"
             except Exception as e:
                 error_msg = f"{type(e).__name__}: {e}"
             self._json({"skills": skills, "count": len(skills), "error": error_msg})
@@ -493,18 +586,21 @@ class _Handler(BaseHTTPRequestHandler):
             self._json({"query": data.get("query", ""), "count": len(hits), "procedures": hits})
 
         elif path == "/procedures/list":
-            result = self.engram.recall(
-                query="workflow procedure process",
-                layers=[3],
-                limit=200, min_score=0.0,
-            )
+            items = self.engram._semantic.list_by_category("L3_", limit=200)
             seen = set()
-            items = []
-            for r in result.procedural_matches[:50]:
-                if r and r not in seen:
-                    seen.add(r)
-                    items.append({"name": "", "content": r[:200], "domain": "", "score": 1.0})
-            self._json({"procedures": items, "count": len(items)})
+            procedures = []
+            for item in items:
+                if item["content"] in seen:
+                    continue
+                seen.add(item["content"])
+                meta = item.get("metadata", {})
+                procedures.append({
+                    "name": meta.get("name", ""),
+                    "content": item["content"][:200],
+                    "domain": meta.get("domain", ""),
+                    "score": round(item.get("importance", 0.5), 3),
+                })
+            self._json({"procedures": procedures, "count": len(procedures)})
 
         # ── Layer 4: Episodic Memory (sessions/events) ──
 
@@ -538,56 +634,37 @@ class _Handler(BaseHTTPRequestHandler):
             self._json({"query": data.get("query", ""), "count": len(hits), "episodes": hits})
 
         elif path == "/episodes/list":
-            # Query L4 via core.recall then extract metadata from _semantic
+            # Real listing via list_by_category — no fake query, deterministic results
             try:
-                result = self.engram.recall(
-                    query="session episode event",
-                    layers=[4],
-                    limit=200, min_score=0.0,
-                )
+                items = self.engram._semantic.list_by_category("L4_", limit=100)
                 seen = set()
-                items = []
-                for content in result.episodic_matches[:80]:
-                    if not content or content in seen:
+                episodes = []
+                for item in items:
+                    if item["content"] in seen:
                         continue
-                    seen.add(content)
-                    # Try to look up metadata from _semantic for this content
-                    title = ""
-                    timestamp = ""
-                    tags = ""
-                    outcome = ""
-                    sid = ""
-                    score = 1.0
-                    try:
-                        matches = self.engram._semantic.recall(
-                            query=content[:80], limit=1, min_score=0.7,
-                        )
-                        if matches and matches[0].memory:
-                            meta = matches[0].memory.metadata or {}
-                            title = meta.get("title", "")
-                            timestamp = meta.get("timestamp", "")
-                            tags = meta.get("tags", "")
-                            outcome = meta.get("outcome", "")
-                            sid = meta.get("session_id", "")
-                            score = round(matches[0].score, 3)
-                    except Exception:
-                        pass
+                    seen.add(item["content"])
+                    meta = item.get("metadata", {})
+                    title = meta.get("title", "")
+                    timestamp = meta.get("timestamp", "")
+                    tags = meta.get("tags", "")
+                    outcome = meta.get("outcome", "")
+                    sid = meta.get("session_id", "")
                     if not title:
-                        first_line = content.split("\n")[0].strip("# ").strip()
+                        first_line = item["content"].split("\n")[0].strip("# ").strip()
                         if len(first_line) > 3:
                             title = first_line[:80]
                         else:
-                            title = content[:80].replace(" | ", " ").strip()
-                    items.append({
+                            title = item["content"][:80].replace(" | ", " ").strip()
+                    episodes.append({
                         "title": title,
-                        "content": content[:300],
+                        "content": item["content"][:300],
                         "timestamp": timestamp,
                         "tags": tags,
                         "outcome": outcome,
                         "session_id": sid,
-                        "score": score,
+                        "score": round(item.get("importance", 0.5), 3),
                     })
-                self._json({"episodes": items, "count": len(items)})
+                self._json({"episodes": episodes, "count": len(episodes)})
             except Exception as e:
                 import traceback
                 self._json({"episodes": [], "count": 0, "error": str(e), "trace": traceback.format_exc()[-300:]})
@@ -624,25 +701,23 @@ class _Handler(BaseHTTPRequestHandler):
             self._json({"query": data.get("query", ""), "count": len(hits), "reflections": hits})
 
         elif path == "/reflections/list":
-            result = self.engram.recall(
-                query="reflection insight improvement learn",
-                layers=[5],
-                limit=200, min_score=0.0,
-            )
+            items = self.engram._semantic.list_by_category("L5_", limit=100)
             seen = set()
-            items = []
-            for r in result.reflection_matches[:50]:
-                if r and r not in seen:
-                    seen.add(r)
-                    items.append({
-                        "topic": "",
-                        "content": r[:200],
-                        "insight": "",
-                        "action": "",
-                        "success": "",
-                        "score": 1.0,
-                    })
-            self._json({"reflections": items, "count": len(items)})
+            reflections = []
+            for item in items:
+                if item["content"] in seen:
+                    continue
+                seen.add(item["content"])
+                meta = item.get("metadata", {})
+                reflections.append({
+                    "topic": meta.get("topic", ""),
+                    "content": item["content"][:200],
+                    "insight": meta.get("insight", ""),
+                    "action": meta.get("action", ""),
+                    "success": meta.get("success", ""),
+                    "score": round(item.get("importance", 0.5), 3),
+                })
+            self._json({"reflections": reflections, "count": len(reflections)})
 
         elif path == "/metrics/log":
             data = self._read_json()

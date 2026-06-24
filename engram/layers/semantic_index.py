@@ -215,6 +215,47 @@ class SemanticIndex:
                     categories.add(meta["category"])
         return sorted(categories)
 
+    def list_by_category(
+        self, category_prefix: str, limit: int = 200
+    ) -> List[dict]:
+        """List all memories whose category starts with the given prefix.
+
+        Uses collection.get (no semantic search) so results are unfiltered
+        and deterministic — unlike collection.query which samples by
+        similarity to a fake query string.
+
+        Args:
+            category_prefix: Category prefix to filter by (e.g. "L4_", "L5_", "skill").
+            limit: Maximum results to return.
+
+        Returns:
+            List of dicts with keys: id, content, category, importance,
+            created_at, metadata, access_count.
+        """
+        all_data = self.collection.get(include=["metadatas", "documents"])
+        if not all_data or not all_data["ids"]:
+            return []
+
+        results = []
+        for i, mem_id in enumerate(all_data["ids"]):
+            meta = (all_data["metadatas"] or [{}])[i] or {}
+            cat = meta.get("category", "")
+            if not cat.startswith(category_prefix):
+                continue
+            results.append({
+                "id": mem_id,
+                "content": (all_data["documents"] or [""])[i] or "",
+                "category": cat,
+                "importance": float(meta.get("importance", 0.5)),
+                "created_at": meta.get("created_at", ""),
+                "metadata": meta,
+                "access_count": int(meta.get("access_count", 0)),
+            })
+            if len(results) >= limit:
+                break
+
+        return results
+
     def update_importance(self, memory_id: str, new_importance: float) -> bool:
         """Update the importance of an existing memory. Returns True on success."""
         try:

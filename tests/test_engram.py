@@ -392,9 +392,9 @@ class TestPromotionThresholds:
 
             updated = engram._semantic.collection.get(ids=[mem_id], include=["metadatas"])
 
-            assert updated["metadatas"][0]["category"] == "skill", \
-
+            assert updated["metadatas"][0]["category"] == "skill", (
                 f"Should not promote at 1 recall, got {updated['metadatas'][0]['category']}"
+            )
 
 
 
@@ -426,9 +426,9 @@ class TestPromotionThresholds:
 
             updated = engram._semantic.collection.get(ids=[mem_id], include=["metadatas"])
 
-            assert updated["metadatas"][0]["category"].startswith("L3_"), \
-
+            assert updated["metadatas"][0]["category"].startswith("L3_"), (
                 f"Should promote to L3, got {updated['metadatas'][0]['category']}"
+            )
 
 
 
@@ -460,9 +460,9 @@ class TestPromotionThresholds:
 
             updated = engram._semantic.collection.get(ids=[mem_id], include=["metadatas"])
 
-            assert updated["metadatas"][0]["category"] == "L3_procedural_skill", \
-
+            assert updated["metadatas"][0]["category"] == "L3_procedural_skill", (
                 "Should not double-promote or skip L4"
+            )
 
 
 
@@ -494,9 +494,9 @@ class TestPromotionThresholds:
 
             updated = engram._semantic.collection.get(ids=[mem_id], include=["metadatas"])
 
-            assert updated["metadatas"][0]["category"].startswith("L3_"), \
-
+            assert updated["metadatas"][0]["category"].startswith("L3_"), (
                 f"High importance should boost to L3, got {updated['metadatas'][0]['category']}"
+            )
 
 
 
@@ -664,7 +664,7 @@ class TestDecayAndPurge:
 
             count_after = engram._semantic.count()
 
-            assert count_after < count_before, \
-
+            assert count_after < count_before, (
                 f"Should purge: before={count_before}, after={count_after}"
+            )
 

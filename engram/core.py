@@ -78,6 +78,14 @@ class RecallResult:
             if lines:
                 sections.append("## Active Context\n" + "\n".join(lines))
 
+        # Layer name → budget index mapping
+        _LAYER_MAP = {
+            "procedural": 3,
+            "episodic": 4,
+            "reflection": 5,
+        }
+        # "memory (category)" defaults to 2
+
         # Layers 2-5: Ranked unified list
         if self.unified:
             lines = []
@@ -86,7 +94,8 @@ class RecallResult:
                 score = item.get("score", 0)
                 layer_name = item.get("layer", "")
                 label = f"[{score:.2f}] {content}" + (f" ({layer_name})" if layer_name else "")
-                if budget.consume(2, len(label)):
+                budget_layer = _LAYER_MAP.get(layer_name, 2)
+                if budget.consume(budget_layer, len(label)):
                     lines.append(f"- {label}")
             if lines:
                 sections.append("## Relevant Memories\n" + "\n".join(lines))
@@ -141,6 +150,9 @@ class Engram:
         self._consolidation_thread: Optional[threading.Thread] = None
         if enable_consolidation:
             self._start_consolidation()
+
+        # Dedup tracking
+        self._dedup_merged_count: int = 0
 
     # ── L1 Persistence ─────────────────────────────────────────────
 
@@ -202,6 +214,9 @@ class Engram:
         If semantically similar content exists (score >= {_DEDUP_THRESHOLD}),
         the existing entry's importance is boosted and the new store is
         skipped — no duplicate created.
+
+        Returns the memory_id string for backward compatibility.
+        Use remember_with_info() to get merge/dedup metadata.
         """
         # Always push to L1
         self._push_hot(content)
@@ -224,6 +239,47 @@ class Engram:
                 content, category=f"L{layer}_{category}", importance=importance,
                 metadata=metadata
             )
+
+    def remember_with_info(
+        self,
+        content: str,
+        layer: int = 2,
+        category: str = "general",
+        importance: float = 0.5,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> dict:
+        """Store a memory, returning full merge/dedup metadata.
+
+        Returns dict with:
+          - memory_id: str
+          - merged: bool — True if merged into existing, False if new
+          - new_importance: float — resulting importance after merge (if merged)
+        """
+        self._push_hot(content)
+
+        dup = self._find_duplicate(content)
+        if dup:
+            existing = dup.memory
+            new_importance = max(existing.importance, importance)
+            new_importance = min(1.0, new_importance + 0.05)
+            self._semantic.update_importance(existing.id, new_importance)
+            self._dedup_merged_count += 1
+            return {
+                "memory_id": existing.id,
+                "merged": True,
+                "new_importance": new_importance,
+            }
+
+        if layer == 1:
+            return {"memory_id": "hot_cache", "merged": False}
+        elif layer == 2:
+            mid = self._semantic.remember(content, category, importance, metadata)
+        else:
+            mid = self._semantic.remember(
+                content, category=f"L{layer}_{category}", importance=importance,
+                metadata=metadata
+            )
+        return {"memory_id": mid, "merged": False}
 
     # ── Unified Recall ─────────────────────────────────────────────
 
